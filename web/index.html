@@ -53,25 +53,27 @@
       <button id="agent-filter-reset" class="btn-link" style="font-size:11px;">Show all</button>
     </div>
 
+    <div class="table-scroll">
     <table id="cron-table" class="hidden">
       <thead>
         <tr>
           <th>Cron</th>
           <th>Agent</th>
-          <th>Schedule</th>
+          <th class="col-hide-md">Schedule</th>
           <th class="num">Predicates <span class="help" title="Predicates are side-effect checks run after every successful (status=ok) cron run. They verify that the cron actually did its work — e.g. a file was written, a JSON list has non-null results, an HTTP endpoint responds.&#10;&#10;If any predicate fails, the same retry/alert flow as a webhook failure kicks in. This catches the case where a cron exits cleanly but didn't actually do anything (agent reported success without invoking its tools).&#10;&#10;The count is how many predicates are configured for this cron in config.json. Hover the badge to see the descriptions.&#10;&#10;0 = webhook-only coverage (still catches hard failures).">?</span></th>
-          <th class="num">Max Retries</th>
-          <th>Alert Recipient</th>
+          <th class="num col-hide-sm">Max Retries</th>
+          <th class="col-hide-lg">Alert Recipient</th>
           <th class="num">Retries (today / 30d)</th>
           <th class="num">Alerts (today / 30d)</th>
-          <th>Last Retried</th>
-          <th>Last Alerted</th>
-          <th>Enabled</th>
+          <th class="col-hide-md">Last Retried</th>
+          <th class="col-hide-md">Last Alerted</th>
+          <th class="col-hide-sm">Enabled</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="cron-tbody"></tbody>
     </table>
+    </div>
 
     <section id="heartbeat-panel" class="panel">
       <h2>Heartbeat scanner</h2>

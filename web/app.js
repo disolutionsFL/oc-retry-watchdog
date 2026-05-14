@@ -153,15 +153,15 @@ function renderCrons() {
     tr.innerHTML = `
       <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
       <td>${agentCell}</td>
-      <td><code>${escapeHtml(c.schedule || "?")}</code></td>
+      <td class="col-hide-md"><code>${escapeHtml(c.schedule || "?")}</code></td>
       <td class="num">${predBadge}</td>
-      <td class="num"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
-      <td><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
+      <td class="num col-hide-sm"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
+      <td class="col-hide-lg"><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
       <td class="num">${c.retries_today || 0} / ${c.retries_30d || 0}</td>
       <td class="num">${c.alerts_today || 0} / ${c.alerts_30d || 0}</td>
-      <td><small>${fmtDate(c.last_retried_at)}</small></td>
-      <td><small>${fmtDate(c.last_alerted_at)}</small></td>
-      <td><input type="checkbox" data-field="enabled" data-id="${c.cron_id}" ${c.enabled ? "checked" : ""}></td>
+      <td class="col-hide-md"><small>${fmtDate(c.last_retried_at)}</small></td>
+      <td class="col-hide-md"><small>${fmtDate(c.last_alerted_at)}</small></td>
+      <td class="col-hide-sm"><input type="checkbox" data-field="enabled" data-id="${c.cron_id}" ${c.enabled ? "checked" : ""}></td>
       <td class="actions">
         <button data-action="retry-now" data-id="${c.cron_id}">Retry now</button>
         <button data-action="test-alert" data-id="${c.cron_id}">Test alert</button>
