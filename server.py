@@ -123,6 +123,16 @@ class Watchdog:
         self.conn = db_mod.connect(cfg["db"]["path"])
         db_mod.init_schema(self.conn, settings_defaults_for_db(cfg))
         self._lock = threading.Lock()
+        # Auto-register predicate-configured crons so they appear in the UI
+        # before their first failure/test-alert. Metadata refreshes in the
+        # background via cron_info_refresh_loop.
+        for cron_id, preds in (cfg.get("predicates") or {}).items():
+            if cron_id.startswith("_") or cron_id.startswith("00000000"):
+                continue
+            if isinstance(preds, list) and preds:
+                db_mod.upsert_cron(self.conn, cron_id, {
+                    "default_max_retries": int(cfg["retries"].get("default_max", 1)),
+                })
         self.scanner = heartbeat_mod.HeartbeatScanner(self)
 
     # ----- helpers
@@ -350,6 +360,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/crons":
             tz = WATCHDOG.cfg["server"]["timezone"]
             crons = db_mod.list_crons_with_counts(WATCHDOG.conn, today_iso_date(tz))
+            # Annotate each cron with predicate count
+            cfg_preds = WATCHDOG.cfg.get("predicates", {}) or {}
+            for c in crons:
+                preds = cfg_preds.get(c["cron_id"])
+                c["predicates_count"] = len(preds) if isinstance(preds, list) else 0
             self._send_json(200, crons)
         elif path.startswith("/api/crons/") and path.endswith("/history"):
             cron_id = path.split("/")[3]

@@ -26,6 +26,7 @@
         <tr>
           <th>Cron</th>
           <th>Schedule</th>
+          <th class="num">Predicates</th>
           <th class="num">Max Retries</th>
           <th>Alert Recipient</th>
           <th class="num">Retries (today / 30d)</th>
@@ -39,7 +40,17 @@
       <tbody id="cron-tbody"></tbody>
     </table>
 
-    <p class="hint">v0.1 — predicate verification and missed-run heartbeat coming in v0.2/v0.3.</p>
+    <section id="heartbeat-panel" class="panel">
+      <h2>Heartbeat scanner</h2>
+      <div class="hb-row">
+        <span id="hb-last">Last scan: <em>(no scans yet)</em></span>
+        <span id="hb-stats" class="muted"></span>
+        <button id="hb-scan-now" class="btn-link">Scan now</button>
+      </div>
+      <p class="hint hb-hint">The scanner runs every 5 min (configurable). For each predicate-configured cron, the latest <code>status=ok</code> finished run is checked against its predicates. Predicate failures trigger the same retry/alert flow as a webhook failure.</p>
+    </section>
+
+    <p class="hint">v0.2 — webhook + retry + alert + predicate verification. Missed-run heartbeat coming in v0.3.</p>
   </main>
 
   <dialog id="settings-modal">

@@ -75,9 +75,14 @@ function renderCrons() {
   for (const c of state.crons) {
     const tr = document.createElement("tr");
     tr.className = rowClass(c);
+    const predCount = c.predicates_count || 0;
+    const predBadge = predCount > 0
+      ? `<span class="badge-pred active" title="${predCount} predicate(s) configured">${predCount}</span>`
+      : `<span class="badge-pred" title="No predicates configured">0</span>`;
     tr.innerHTML = `
       <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
       <td><code>${escapeHtml(c.schedule || "?")}</code></td>
+      <td class="num">${predBadge}</td>
       <td class="num"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
       <td><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
       <td class="num">${c.retries_today || 0} / ${c.retries_30d || 0}</td>
@@ -91,6 +96,26 @@ function renderCrons() {
       </td>
     `;
     tbody.appendChild(tr);
+  }
+}
+
+async function loadHeartbeat() {
+  try {
+    const rows = await api("GET", "/api/heartbeat");
+    const last = (rows && rows.length) ? rows[0] : null;
+    if (!last) {
+      $("#hb-last").innerHTML = "Last scan: <em>(no scans yet)</em>";
+      $("#hb-stats").textContent = "";
+      return;
+    }
+    $("#hb-last").innerHTML = `Last scan: <strong>${fmtDate(last.scanned_at)}</strong>`;
+    const failedTxt = last.predicates_failed > 0
+      ? `<span style="color: var(--bad); font-weight: 600;">${last.predicates_failed} predicate failure(s)</span>`
+      : `${last.predicates_failed} failures`;
+    $("#hb-stats").innerHTML =
+      `${last.crons_checked} cron(s) checked · ${failedTxt} · ${last.duration_ms}ms`;
+  } catch (e) {
+    $("#hb-last").innerHTML = `Last scan: <em>(error: ${e.message})</em>`;
   }
 }
 
@@ -110,6 +135,7 @@ async function loadAll() {
     state.settings = settings || {};
     renderCrons();
     updateHeader();
+    loadHeartbeat();   // async, fire-and-forget
   } catch (e) {
     toast(`Load failed: ${e.message}`, "bad");
   }
@@ -161,6 +187,15 @@ document.addEventListener("click", async (e) => {
 });
 
 $("#refresh-btn").addEventListener("click", loadAll);
+
+$("#hb-scan-now").addEventListener("click", async () => {
+  try {
+    const stats = await api("POST", "/api/heartbeat/scan-now");
+    const msg = `Scanned ${stats.crons_checked} cron(s) — ${stats.predicates_failed} failure(s) (${stats.duration_ms}ms)`;
+    toast(msg, stats.predicates_failed > 0 ? "bad" : "good");
+    loadAll();
+  } catch (e) { toast(`Scan failed: ${e.message}`, "bad"); }
+});
 
 $("#settings-btn").addEventListener("click", () => {
   $("#setting-recipient").value = state.settings.default_alert_recipient || "";
