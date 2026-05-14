@@ -38,6 +38,8 @@
   },
 
   "openclaw_cli": "openclaw",
+  "_openclaw_instance_name_comment": "Optional label shown in the UI header (e.g. 'C3PO', 'prod-east'). Distinguishes a watchdog instance from its hostname when you're running multiple watchdogs across machines. Leave empty to hide.",
+  "openclaw_instance_name": "",
   "ui_url": "http://localhost:9095/",
 
   "predicates": {

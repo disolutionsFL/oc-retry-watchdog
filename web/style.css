@@ -17,6 +17,16 @@
   --bad:              #b21c1c;
   --toast-fg:         #ffffff;
   --backdrop:         rgba(0, 0, 0, 0.30);
+
+  /* 8-slot agent palette — deterministic per name hash */
+  --agent-0-bg: hsl(  0 60% 92%);  --agent-0-fg: hsl(  0 55% 28%);
+  --agent-1-bg: hsl( 32 70% 90%);  --agent-1-fg: hsl( 32 60% 28%);
+  --agent-2-bg: hsl( 50 75% 88%);  --agent-2-fg: hsl( 45 60% 25%);
+  --agent-3-bg: hsl(140 45% 88%);  --agent-3-fg: hsl(140 50% 22%);
+  --agent-4-bg: hsl(180 50% 88%);  --agent-4-fg: hsl(180 60% 22%);
+  --agent-5-bg: hsl(210 70% 92%);  --agent-5-fg: hsl(210 60% 28%);
+  --agent-6-bg: hsl(270 50% 92%);  --agent-6-fg: hsl(270 55% 30%);
+  --agent-7-bg: hsl(320 55% 92%);  --agent-7-fg: hsl(320 55% 30%);
 }
 
 :root[data-theme="dark"] {
@@ -37,6 +47,15 @@
   --bad:              #e57373;
   --toast-fg:         #161618;
   --backdrop:         rgba(0, 0, 0, 0.55);
+
+  --agent-0-bg: hsl(  0 35% 22%);  --agent-0-fg: hsl(  0 60% 82%);
+  --agent-1-bg: hsl( 32 35% 20%);  --agent-1-fg: hsl( 32 65% 78%);
+  --agent-2-bg: hsl( 50 35% 20%);  --agent-2-fg: hsl( 50 65% 78%);
+  --agent-3-bg: hsl(140 30% 18%);  --agent-3-fg: hsl(140 50% 75%);
+  --agent-4-bg: hsl(180 30% 18%);  --agent-4-fg: hsl(180 55% 78%);
+  --agent-5-bg: hsl(210 35% 20%);  --agent-5-fg: hsl(210 65% 80%);
+  --agent-6-bg: hsl(270 30% 22%);  --agent-6-fg: hsl(270 55% 80%);
+  --agent-7-bg: hsl(320 30% 22%);  --agent-7-fg: hsl(320 55% 80%);
 }
 
 * { box-sizing: border-box; }
@@ -53,6 +72,12 @@ header {
   background: var(--bg-surface);
 }
 header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.header-left { display: flex; align-items: baseline; gap: 12px; }
+.instance-name {
+  font-size: 13px; font-weight: 500; color: var(--muted);
+  padding: 2px 10px; border-radius: 12px;
+  background: var(--bg-pill); border: 1px solid var(--border);
+}
 .header-meta { display: flex; align-items: center; gap: 12px; }
 .pill {
   display: inline-block; padding: 2px 8px; border-radius: 10px;
@@ -173,3 +198,46 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
   cursor: help; text-transform: none; letter-spacing: 0;
 }
 .help:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ----- agent chip + filter ----- */
+.agent-chip {
+  display: inline-block;
+  font-size: 10px; font-weight: 600;
+  padding: 1px 7px; border-radius: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  white-space: nowrap; vertical-align: middle;
+  margin-left: 6px;
+}
+.agent-chip.c0 { background: var(--agent-0-bg); color: var(--agent-0-fg); }
+.agent-chip.c1 { background: var(--agent-1-bg); color: var(--agent-1-fg); }
+.agent-chip.c2 { background: var(--agent-2-bg); color: var(--agent-2-fg); }
+.agent-chip.c3 { background: var(--agent-3-bg); color: var(--agent-3-fg); }
+.agent-chip.c4 { background: var(--agent-4-bg); color: var(--agent-4-fg); }
+.agent-chip.c5 { background: var(--agent-5-bg); color: var(--agent-5-fg); }
+.agent-chip.c6 { background: var(--agent-6-bg); color: var(--agent-6-fg); }
+.agent-chip.c7 { background: var(--agent-7-bg); color: var(--agent-7-fg); }
+
+.agent-filter-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px 0; margin-bottom: 8px; font-size: 12px;
+}
+.agent-filter-bar .muted { color: var(--muted); font-size: 12px; }
+#agent-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-filter-chip {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 11px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-surface);
+  color: var(--muted);
+  font-size: 11px; font-weight: 600; user-select: none;
+  transition: opacity 0.1s ease;
+}
+.agent-filter-chip:hover { border-color: var(--accent); }
+.agent-filter-chip.active.c0 { background: var(--agent-0-bg); color: var(--agent-0-fg); border-color: transparent; }
+.agent-filter-chip.active.c1 { background: var(--agent-1-bg); color: var(--agent-1-fg); border-color: transparent; }
+.agent-filter-chip.active.c2 { background: var(--agent-2-bg); color: var(--agent-2-fg); border-color: transparent; }
+.agent-filter-chip.active.c3 { background: var(--agent-3-bg); color: var(--agent-3-fg); border-color: transparent; }
+.agent-filter-chip.active.c4 { background: var(--agent-4-bg); color: var(--agent-4-fg); border-color: transparent; }
+.agent-filter-chip.active.c5 { background: var(--agent-5-bg); color: var(--agent-5-fg); border-color: transparent; }
+.agent-filter-chip.active.c6 { background: var(--agent-6-bg); color: var(--agent-6-fg); border-color: transparent; }
+.agent-filter-chip.active.c7 { background: var(--agent-7-bg); color: var(--agent-7-fg); border-color: transparent; }
+.agent-filter-chip:not(.active) { text-decoration: line-through; opacity: 0.55; }

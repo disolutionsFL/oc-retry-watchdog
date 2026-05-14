@@ -61,6 +61,7 @@ DEFAULT_CONFIG = {
         "runs_dir_path": "~/.openclaw/cron/runs",
     },
     "openclaw_cli": "openclaw",
+    "openclaw_instance_name": "",
     "ui_url": "http://localhost:9095/",
     "predicates": {},
     "healthchecks": {},
@@ -354,6 +355,7 @@ class Handler(BaseHTTPRequestHandler):
                 "default_alert_recipient": s.get("default_alert_recipient", ""),
                 "default_max_retries": int(s.get("default_max_retries", "1")),
                 "sender_account": s.get("sender_account", ""),
+                "openclaw_instance_name": WATCHDOG.cfg.get("openclaw_instance_name", ""),
                 "daemon_version": VERSION,
                 "daemon_uptime_seconds": int(time.time() - _START_TIME),
             })

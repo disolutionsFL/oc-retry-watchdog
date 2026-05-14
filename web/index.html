@@ -22,7 +22,10 @@
 </head>
 <body>
   <header>
-    <h1>OpenClaw Retry Watchdog</h1>
+    <div class="header-left">
+      <h1>OpenClaw Retry Watchdog</h1>
+      <span id="instance-name" class="instance-name hidden"></span>
+    </div>
     <div class="header-meta">
       <span id="version-pill" class="pill">loading…</span>
       <button id="theme-toggle" class="btn-link theme-toggle" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">
@@ -43,6 +46,12 @@
     <section id="empty-state" class="hidden">
       <p>No crons registered yet. They'll auto-register here on first failure once you wire OpenClaw's <code>--failure-alert-mode webhook</code> to <code>http://localhost:9095/webhook</code>.</p>
     </section>
+
+    <div id="agent-filter-bar" class="agent-filter-bar hidden">
+      <span class="muted">Filter by agent:</span>
+      <div id="agent-filter-chips"></div>
+      <button id="agent-filter-reset" class="btn-link" style="font-size:11px;">Show all</button>
+    </div>
 
     <table id="cron-table" class="hidden">
       <thead>

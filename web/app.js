@@ -18,6 +18,36 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
   setTheme(current === "light" ? "dark" : "light");
 });
 
+// ----- agent badge colors -----
+// Deterministic hash → 0..7 color slot (matches CSS .agent-chip.cN definitions).
+function agentColorIndex(agent) {
+  const s = String(agent || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h * 31) + s.charCodeAt(i)) >>> 0;
+  }
+  return h % 8;
+}
+
+// ----- agent filter -----
+const AGENT_FILTER_KEY = "oc-retry-watchdog-agent-filter";
+
+function loadAgentFilter() {
+  // Returns Set of *disabled* agent names. Empty Set = show all.
+  try {
+    const raw = localStorage.getItem(AGENT_FILTER_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function saveAgentFilter(disabledSet) {
+  try { localStorage.setItem(AGENT_FILTER_KEY, JSON.stringify(Array.from(disabledSet))); }
+  catch { /* private mode */ }
+}
+
+const disabledAgents = loadAgentFilter();
+
 const state = {
   crons: [],
   settings: {},
@@ -77,6 +107,23 @@ function rowClass(c) {
   return "";
 }
 
+function renderAgentFilter() {
+  const bar = $("#agent-filter-bar");
+  const chipsEl = $("#agent-filter-chips");
+  const agents = Array.from(new Set(state.crons.map(c => c.agent || "").filter(Boolean))).sort();
+  if (agents.length === 0) {
+    bar.classList.add("hidden");
+    chipsEl.innerHTML = "";
+    return;
+  }
+  bar.classList.remove("hidden");
+  chipsEl.innerHTML = agents.map(a => {
+    const idx = agentColorIndex(a);
+    const active = !disabledAgents.has(a);
+    return `<button class="agent-filter-chip c${idx}${active ? " active" : ""}" data-agent="${escapeAttr(a)}" title="${active ? "Hide" : "Show"} ${escapeHtml(a)} rows">${escapeHtml(a)}</button>`;
+  }).join("");
+}
+
 function renderCrons() {
   const tbody = $("#cron-tbody");
   if (state.crons.length === 0) {
@@ -88,6 +135,7 @@ function renderCrons() {
   $("#cron-table").classList.remove("hidden");
   tbody.innerHTML = "";
   for (const c of state.crons) {
+    if (c.agent && disabledAgents.has(c.agent)) continue;   // filtered out
     const tr = document.createElement("tr");
     tr.className = rowClass(c);
     const predCount = c.predicates_count || 0;
@@ -99,8 +147,11 @@ function renderCrons() {
     const predBadge = predCount > 0
       ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}">${predCount}</span>`
       : `<span class="badge-pred" title="${escapeAttr(predTitle)}">0</span>`;
+    const agentBadge = c.agent
+      ? `<span class="agent-chip c${agentColorIndex(c.agent)}" title="Agent: ${escapeAttr(c.agent)}">${escapeHtml(c.agent)}</span>`
+      : "";
     tr.innerHTML = `
-      <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
+      <td><strong>${escapeHtml(c.name || c.cron_id)}</strong>${agentBadge}<br><small><code>${c.cron_id}</code></small></td>
       <td><code>${escapeHtml(c.schedule || "?")}</code></td>
       <td class="num">${predBadge}</td>
       <td class="num"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
@@ -153,6 +204,7 @@ async function loadAll() {
     ]);
     state.crons = crons || [];
     state.settings = settings || {};
+    renderAgentFilter();
     renderCrons();
     updateHeader();
     loadHeartbeat();   // async, fire-and-forget
@@ -164,6 +216,15 @@ async function loadAll() {
 function updateHeader() {
   const v = state.settings;
   $("#version-pill").textContent = `v${v.daemon_version || "?"} · ${uptimeStr(v.daemon_uptime_seconds)}`;
+  const instance = (v.openclaw_instance_name || "").trim();
+  const el = $("#instance-name");
+  if (instance) {
+    el.textContent = instance;
+    el.classList.remove("hidden");
+  } else {
+    el.textContent = "";
+    el.classList.add("hidden");
+  }
 }
 
 // ----- handlers
@@ -207,6 +268,29 @@ document.addEventListener("click", async (e) => {
 });
 
 $("#refresh-btn").addEventListener("click", loadAll);
+
+// Agent filter — toggle on click, persist, re-render
+$("#agent-filter-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".agent-filter-chip");
+  if (!chip) return;
+  const agent = chip.dataset.agent;
+  if (!agent) return;
+  if (disabledAgents.has(agent)) {
+    disabledAgents.delete(agent);
+  } else {
+    disabledAgents.add(agent);
+  }
+  saveAgentFilter(disabledAgents);
+  renderAgentFilter();
+  renderCrons();
+});
+
+$("#agent-filter-reset").addEventListener("click", () => {
+  disabledAgents.clear();
+  saveAgentFilter(disabledAgents);
+  renderAgentFilter();
+  renderCrons();
+});
 
 $("#hb-scan-now").addEventListener("click", async () => {
   try {
