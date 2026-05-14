@@ -119,18 +119,21 @@ def init_schema(conn: sqlite3.Connection, defaults: dict[str, Any]) -> None:
     `defaults` is the resolved set of values from config.json that should
     populate the `settings` table on a fresh DB. UI-edited values persist
     in this table — config.json only seeds the initial state.
+
+    Note: executescript() implicitly commits before running, so we can't
+    wrap it in our manual transaction(). With isolation_level=None each
+    single execute() auto-commits — fine for the small number of seed rows.
     """
-    with transaction(conn):
-        conn.executescript(SCHEMA_SQL)
-        existing = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        if not existing:
-            conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
-                         ("schema_version", SCHEMA_VERSION))
-        for k, v in defaults.items():
-            conn.execute(
-                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                (k, str(v) if not isinstance(v, str) else v),
-            )
+    conn.executescript(SCHEMA_SQL)
+    existing = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if not existing:
+        conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
+                     ("schema_version", SCHEMA_VERSION))
+    for k, v in defaults.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            (k, str(v) if not isinstance(v, str) else v),
+        )
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
