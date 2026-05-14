@@ -151,18 +151,18 @@ function renderCrons() {
       ? `<span class="agent-chip c${agentColorIndex(c.agent)}" title="Agent: ${escapeAttr(c.agent)}">${escapeHtml(c.agent)}</span>`
       : `<span class="muted" style="font-size:11px;">&mdash;</span>`;
     tr.innerHTML = `
-      <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
-      <td>${agentCell}</td>
-      <td class="col-hide-md"><code>${escapeHtml(c.schedule || "?")}</code></td>
-      <td class="num">${predBadge}</td>
-      <td class="num col-hide-sm"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
-      <td class="col-hide-lg"><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
-      <td class="num">${c.retries_today || 0} / ${c.retries_30d || 0}</td>
-      <td class="num">${c.alerts_today || 0} / ${c.alerts_30d || 0}</td>
-      <td class="col-hide-md"><small>${fmtDate(c.last_retried_at)}</small></td>
-      <td class="col-hide-md"><small>${fmtDate(c.last_alerted_at)}</small></td>
-      <td class="col-hide-sm"><input type="checkbox" data-field="enabled" data-id="${c.cron_id}" ${c.enabled ? "checked" : ""}></td>
-      <td class="actions">
+      <td data-label="Cron"><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
+      <td data-label="Agent">${agentCell}</td>
+      <td data-label="Schedule" class="col-hide-md"><code>${escapeHtml(c.schedule || "?")}</code></td>
+      <td data-label="Predicates" class="num">${predBadge}</td>
+      <td data-label="Max Retries" class="num col-hide-sm"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
+      <td data-label="Alert Recipient" class="col-hide-lg"><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
+      <td data-label="Retries (today / 30d)" class="num">${c.retries_today || 0} / ${c.retries_30d || 0}</td>
+      <td data-label="Alerts (today / 30d)" class="num">${c.alerts_today || 0} / ${c.alerts_30d || 0}</td>
+      <td data-label="Last Retried" class="col-hide-md"><small>${fmtDate(c.last_retried_at)}</small></td>
+      <td data-label="Last Alerted" class="col-hide-md"><small>${fmtDate(c.last_alerted_at)}</small></td>
+      <td data-label="Enabled" class="col-hide-sm"><input type="checkbox" data-field="enabled" data-id="${c.cron_id}" ${c.enabled ? "checked" : ""}></td>
+      <td data-label="Actions" class="actions">
         <button data-action="retry-now" data-id="${c.cron_id}">Retry now</button>
         <button data-action="test-alert" data-id="${c.cron_id}">Test alert</button>
       </td>

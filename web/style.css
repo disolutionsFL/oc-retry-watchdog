@@ -264,10 +264,91 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
   .hb-row { flex-wrap: wrap; }
   .panel { padding: 10px 12px; }
 }
+/* Phone-sized: flip the cron table to a card layout. No horizontal scroll. */
 @media (max-width: 560px) {
-  .col-hide-sm { display: none; }
   .actions button { padding: 3px 6px; font-size: 11px; }
-  th { font-size: 11px; letter-spacing: 0.2px; }
   .header-meta { gap: 8px; }
   .header-meta .btn-link { font-size: 12px; padding: 4px 6px; }
+
+  /* Container no longer needs horizontal overflow */
+  .table-scroll { overflow-x: visible; }
+
+  /* Strip table chrome and flip every part to a block */
+  #cron-table,
+  #cron-table thead,
+  #cron-table tbody,
+  #cron-table tr,
+  #cron-table th,
+  #cron-table td { display: block; }
+  #cron-table { border: none; background: transparent; }
+  #cron-table thead { display: none; }
+
+  /* Each row becomes a card */
+  #cron-table tr {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+  }
+
+  /* In card mode all cells (including formerly hide-* ones) are visible —
+     vertical space is plentiful. */
+  #cron-table .col-hide-sm,
+  #cron-table .col-hide-md,
+  #cron-table .col-hide-lg { display: flex; }
+
+  /* …except schedule and alert recipient, which are long and rarely
+     consulted on a phone. */
+  #cron-table td[data-label="Schedule"],
+  #cron-table td[data-label="Alert Recipient"] { display: none; }
+
+  /* Each cell is a key:value row */
+  #cron-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px dotted var(--border);
+    text-align: left;
+  }
+  #cron-table td:last-child { border-bottom: none; }
+  #cron-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.3px;
+    flex-shrink: 0;
+  }
+  #cron-table td.num { font-variant-numeric: tabular-nums; }
+
+  /* Card header: cron name + UUID — full width, no label */
+  #cron-table td[data-label="Cron"] {
+    display: block;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px; margin-bottom: 6px;
+  }
+  #cron-table td[data-label="Cron"]::before { display: none; }
+
+  /* Actions: label above, buttons in a row below */
+  #cron-table td.actions {
+    display: block;
+    border-bottom: none;
+    padding-top: 8px;
+  }
+  #cron-table td.actions::before {
+    display: block;
+    margin-bottom: 6px;
+  }
+  #cron-table td.actions button { margin-right: 6px; }
+
+  /* Inline inputs shouldn't stretch full-width inside a flex row */
+  #cron-table td input.inline { width: auto; max-width: 60%; text-align: right; }
+  #cron-table td input.inline.num { width: 60px; }
+  #cron-table td input[type="checkbox"] { margin-right: 0; }
+
+  /* Row state borders work as full borders in card mode */
+  #cron-table tr.row-retried-only { border-color: var(--warn); border-left-width: 3px; }
+  #cron-table tr.row-alerted      { border-color: var(--bad);  border-left-width: 3px; }
 }
