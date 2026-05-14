@@ -250,11 +250,17 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
 /* Column-priority hiding. The classes cascade: hide-lg hides earliest
    (tablet portrait and down), hide-md hides at smaller, hide-sm hides
    on phones. */
+/* At tablet portrait and below, drop both Alert Recipient AND the
+   wider/lower-priority columns (Schedule, Last Retried, Last Alerted)
+   together. 1100px covers iPad Pro 1024 + Zenbook Fold 853. */
 @media (max-width: 1100px) {
-  .col-hide-lg { display: none; }
-}
-@media (max-width: 820px) {
+  .col-hide-lg,
   .col-hide-md { display: none; }
+}
+
+/* Below ~820px we also tighten chrome — these aren't column hides,
+   just style adjustments that scale down with viewport. */
+@media (max-width: 820px) {
   header { flex-wrap: wrap; row-gap: 8px; padding: 10px 14px; }
   header h1 { font-size: 16px; }
   .instance-name { font-size: 12px; padding: 1px 8px; }
