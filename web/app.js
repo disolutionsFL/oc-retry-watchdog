@@ -147,11 +147,12 @@ function renderCrons() {
     const predBadge = predCount > 0
       ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}">${predCount}</span>`
       : `<span class="badge-pred" title="${escapeAttr(predTitle)}">0</span>`;
-    const agentBadge = c.agent
+    const agentCell = c.agent
       ? `<span class="agent-chip c${agentColorIndex(c.agent)}" title="Agent: ${escapeAttr(c.agent)}">${escapeHtml(c.agent)}</span>`
-      : "";
+      : `<span class="muted" style="font-size:11px;">&mdash;</span>`;
     tr.innerHTML = `
-      <td><strong>${escapeHtml(c.name || c.cron_id)}</strong>${agentBadge}<br><small><code>${c.cron_id}</code></small></td>
+      <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
+      <td>${agentCell}</td>
       <td><code>${escapeHtml(c.schedule || "?")}</code></td>
       <td class="num">${predBadge}</td>
       <td class="num"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
