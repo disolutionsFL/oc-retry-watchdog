@@ -29,7 +29,7 @@
   },
 
   "heartbeat": {
-    "_comment": "v0.3 — used by the heartbeat scanner for missed-run detection. v0.1 ignores this section.",
+    "_comment": "Scanner config. v0.2 uses interval_minutes + lookback_hours + runs_dir_path. v0.3 will add missed-run detection (uses grace_period_minutes + jobs_json_path).",
     "interval_minutes": 5,
     "grace_period_minutes": 10,
     "lookback_hours": 6,
@@ -41,26 +41,51 @@
   "ui_url": "http://localhost:9095/",
 
   "predicates": {
-    "_comment": "v0.2 — per-cron predicate rules. v0.1 ignores this section. Key is cron UUID.",
+    "_comment": "v0.2 — per-cron predicate rules. After each successful run (status=ok), the heartbeat scanner evaluates every predicate; the FIRST failed predicate triggers the same retry-or-alert flow as a webhook failure. Catches the case where the cron reports status=ok but didn't actually do its work. Key is cron UUID.",
+    "_supported_types": "file_mtime | file_grew | json_field_count | http_health",
+    "_path_placeholders": "{TODAY} and {YESTERDAY} resolve to YYYY-MM-DD in server.timezone",
     "00000000-0000-0000-0000-000000000000": [
       {
         "type": "file_mtime",
         "path": "/path/to/output-{YESTERDAY}.json",
         "max_age_minutes": 30,
-        "description": "Output file must have been written within 30 min of cron fire"
+        "min_size_bytes": 100,
+        "description": "Output file must have been written within 30 min and be at least 100 bytes"
       },
       {
         "type": "json_field_count",
         "path": "/path/to/output-{YESTERDAY}.json",
-        "json_path": "$[?(@.result != null)]",
+        "field": "result",
+        "filter": "non_null",
         "count_min": 1,
         "description": "At least one record has a non-null result"
+      },
+      {
+        "type": "json_field_count",
+        "path": "/path/to/output-{TODAY}.json",
+        "list_path": "picks",
+        "field": "source",
+        "filter": { "equals": "daily-sports-report" },
+        "count_min": 1,
+        "description": "At least one pick written by the daily-sports-report source"
+      },
+      {
+        "type": "file_grew",
+        "path": "/path/to/rolling-log.json",
+        "description": "Rolling log file must have grown since last scan"
+      },
+      {
+        "type": "http_health",
+        "url": "http://localhost:8888/api/health",
+        "timeout_seconds": 5,
+        "expected_status": 200,
+        "description": "Downstream service responding"
       }
     ]
   },
 
   "healthchecks": {
-    "_comment": "v0.2 — pre-retry healthchecks. If a check fails, the watchdog does NOT retry (avoids retrying into a broken dependency).",
+    "_comment": "v0.2 placeholder — wired in v0.2.x. Pre-retry checks: if any healthcheck fails when a webhook failure comes in, the watchdog skips the retry (avoids retrying into a broken dependency) and fires a dependency-unhealthy alert instead.",
     "00000000-0000-0000-0000-000000000000": [
       {
         "type": "http_health",

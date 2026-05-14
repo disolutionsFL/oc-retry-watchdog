@@ -4,9 +4,11 @@ A small Python daemon that catches OpenClaw cron failures, retries them once (co
 
 OpenClaw's built-in cron scheduler supports failure alerting via webhook but doesn't retry. Most cron failures in agent-driven setups are transient — model produced no completion, upstream API hiccup, dependency busy — and one retry typically clears them. This bolt-on closes that gap. A web UI lets you tune `max_retries` and alert recipients per cron.
 
-> **Status:** v0.1 (early). Webhook + retry + alert flow. Predicate-based side-effect verification (v0.2) and missed-run heartbeat detection (v0.3) are coming.
+> **Status:** v0.2. Webhook + retry + alert flow (v0.1) PLUS predicate-based side-effect verification on successful runs (v0.2). Missed-run heartbeat detection (v0.3) and a full predicate-editor UI (v0.4) still to come.
 
-## Features (v0.1)
+## Features
+
+### v0.1 — webhook + retry + alert
 
 - Receives OpenClaw failure webhooks at `POST /webhook`
 - Auto-registers crons on first failure
@@ -17,11 +19,50 @@ OpenClaw's built-in cron scheduler supports failure alerting via webhook but doe
 - SQLite-backed history of every retry and alert
 - Zero non-stdlib dependencies (Python 3.11+)
 
+### v0.2 — predicate-based side-effect verification
+
+OpenClaw cron failures often come in two shapes: hard failures (`status=error`, model couldn't respond, timeout) and **silent failures** where the cron reports `status=ok` but its side effects never happened (the agent narrated success without invoking its tools). v0.1's webhook covers the hard failures; v0.2 closes the silent-failure gap.
+
+After every `status=ok` run, a background scanner evaluates per-cron **predicates** declared in `config.json`. Predicate types:
+
+- **`file_mtime`** — file at `path` must have mtime within `max_age_minutes`. Optional `min_size_bytes`.
+- **`file_grew`** — file at `path` must have grown since the last scan (tracked in SQLite).
+- **`json_field_count`** — load JSON at `path`, count list entries matching a field filter (`non_null` / `null` / `{equals: X}` / `{in: [...]}`), assert `count_min` / `count_max`.
+- **`http_health`** — GET a URL, expect `expected_status` (default 200).
+
+Path placeholders: `{TODAY}` and `{YESTERDAY}` resolve to `YYYY-MM-DD` in your configured timezone.
+
+When a predicate fails, the same retry-or-alert logic kicks in (counts against the cron's `max_retries`, escalates to email when exhausted). Predicate failures show up in retry/alert history with `failure_source = "predicate"`.
+
+Example for a daily grading job:
+
+```json
+"predicates": {
+  "<grading-cron-uuid>": [
+    {
+      "type": "file_mtime",
+      "path": "/data/picks/{YESTERDAY}.json",
+      "max_age_minutes": 30,
+      "description": "Yesterday's picks file must have been touched within 30 min"
+    },
+    {
+      "type": "json_field_count",
+      "path": "/data/picks/{YESTERDAY}.json",
+      "field": "result",
+      "filter": "non_null",
+      "count_min": 1,
+      "description": "At least one pick has a graded result (W/L/Push)"
+    }
+  ]
+}
+```
+
+If you start the daemon and existing successful runs are older than `heartbeat.lookback_hours` (default 6h), they're skipped — predicates only evaluate against new runs the scanner sees after startup or within the lookback window.
+
 ## Coming soon
 
-- **v0.2** — Predicate framework: verify that a "successful" cron actually mutated its expected output (file mtime / JSON field count / size delta). Catches the "agent reports status=ok but did nothing" failure mode.
-- **v0.3** — Heartbeat scanner: every 5 min, compare expected cron fire times against actual run records. Detects silent missed runs (host rebooted, scheduler stalled).
-- **v0.4** — Full web UI with predicate editor, heartbeat dashboard, history drill-down.
+- **v0.3** — Heartbeat scanner extension: compare expected cron fire times against actual run records. Detects silent missed runs (host rebooted, scheduler stalled).
+- **v0.4** — Web UI: predicate editor modal, heartbeat dashboard, history drill-down. Currently predicates are read-only via `GET /api/crons/<id>/predicates`; edit by hand in `config.json` + restart.
 
 ## Architecture
 
@@ -293,6 +334,9 @@ All endpoints return JSON.
 | POST | `/api/crons/<id>/retry-now` | Manually fire `openclaw cron run <id>` |
 | POST | `/api/crons/<id>/test-alert` | Send a synthetic alert email |
 | GET | `/api/crons/<id>/history` | Last 10 retry + 10 alert events for the cron |
+| GET | `/api/crons/<id>/predicates` | Predicates configured for the cron (read-only — edit `config.json` + restart for v0.2) |
+| GET | `/api/heartbeat` | Last 50 heartbeat scan rows (`crons_checked`, `predicates_failed`, `duration_ms`) |
+| POST | `/api/heartbeat/scan-now` | Force a one-off scan (returns the same stats) |
 
 ## Security
 

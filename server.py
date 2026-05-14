@@ -29,8 +29,9 @@ from zoneinfo import ZoneInfo
 import db as db_mod
 import alert as alert_mod
 import openclaw_lookup as oc
+import heartbeat as heartbeat_mod
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -122,6 +123,7 @@ class Watchdog:
         self.conn = db_mod.connect(cfg["db"]["path"])
         db_mod.init_schema(self.conn, settings_defaults_for_db(cfg))
         self._lock = threading.Lock()
+        self.scanner = heartbeat_mod.HeartbeatScanner(self)
 
     # ----- helpers
 
@@ -355,6 +357,15 @@ class Handler(BaseHTTPRequestHandler):
                 "retry_events": db_mod.recent_retry_events(WATCHDOG.conn, cron_id),
                 "alert_events": db_mod.recent_alert_events(WATCHDOG.conn, cron_id),
             })
+        elif path.startswith("/api/crons/") and path.endswith("/predicates"):
+            cron_id = path.split("/")[3]
+            preds = (WATCHDOG.cfg.get("predicates") or {}).get(cron_id, [])
+            self._send_json(200, preds if isinstance(preds, list) else [])
+        elif path == "/api/heartbeat":
+            rows = WATCHDOG.conn.execute(
+                "SELECT * FROM heartbeat_scans ORDER BY id DESC LIMIT 50"
+            ).fetchall()
+            self._send_json(200, [dict(r) for r in rows])
         else:
             self._send_text(404, "Not found")
 
@@ -390,6 +401,11 @@ class Handler(BaseHTTPRequestHandler):
             if action == "test-alert":
                 self._send_json(200, WATCHDOG.test_alert(cron_id))
                 return
+
+        if path == "/api/heartbeat/scan-now":
+            stats = WATCHDOG.scanner.scan_once()
+            self._send_json(200, stats)
+            return
 
         self._send_text(404, "Not found")
 
@@ -462,6 +478,11 @@ def main() -> int:
     threading.Thread(
         target=cron_info_refresh_loop,
         args=(WATCHDOG,),
+        daemon=True,
+    ).start()
+
+    threading.Thread(
+        target=WATCHDOG.scanner.run_forever,
         daemon=True,
     ).start()
 
