@@ -1,7 +1,22 @@
-// oc-retry-watchdog v0.1 UI
+// oc-retry-watchdog UI
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+// ----- theme -----
+// Initial theme is applied by an inline script in <head> (prevents FOUC).
+// This handler just toggles + persists on click.
+const THEME_KEY = "oc-retry-watchdog-theme";
+
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* private mode */ }
+}
+
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  setTheme(current === "light" ? "dark" : "light");
+});
 
 const state = {
   crons: [],
