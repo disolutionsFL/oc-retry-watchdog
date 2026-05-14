@@ -61,13 +61,67 @@ python3 server.py --init-db
 
 # 4. Run
 python3 server.py
-# (or install the systemd unit — see retry-watchdog.service.example)
+# (or install the systemd unit — see "Install as a systemd service" below)
 
 # 5. Smoke test the API
 curl http://localhost:9095/api/health
 curl http://localhost:9095/api/settings
 curl http://localhost:9095/api/crons
 ```
+
+## Install as a systemd service
+
+The included `retry-watchdog.service.example` assumes a deliberate layout: code lives at `~/.openclaw/retry-watchdog/code/` (a clone of this repo) and `config.json` lives at `~/.openclaw/retry-watchdog/config.json`. With that layout the daemon updates cleanly via `git pull` without touching your config.
+
+```bash
+# One-time install
+INSTALL_DIR="$HOME/.openclaw/retry-watchdog"
+mkdir -p "$INSTALL_DIR"
+git clone https://github.com/disolutionsFL/oc-retry-watchdog.git "$INSTALL_DIR/code"
+
+# Drop your config in place (edit before or after copying)
+cp "$INSTALL_DIR/code/config.example.json" "$INSTALL_DIR/config.json"
+$EDITOR "$INSTALL_DIR/config.json"
+
+# Install the user-level systemd unit
+mkdir -p "$HOME/.config/systemd/user"
+cp "$INSTALL_DIR/code/retry-watchdog.service.example" \
+   "$HOME/.config/systemd/user/retry-watchdog.service"
+systemctl --user daemon-reload
+
+# Initialize the DB, enable + start, smoke-test
+RETRY_WATCHDOG_CONFIG="$INSTALL_DIR/config.json" \
+    python3 "$INSTALL_DIR/code/server.py" --init-db
+systemctl --user enable --now retry-watchdog.service
+sleep 2
+systemctl --user status retry-watchdog.service --no-pager | head -20
+curl -sf http://localhost:9095/api/health && echo
+curl -sf http://localhost:9095/api/settings && echo
+```
+
+### Updating the code
+
+```bash
+INSTALL_DIR="$HOME/.openclaw/retry-watchdog"
+git -C "$INSTALL_DIR/code" pull
+systemctl --user restart retry-watchdog.service
+curl -sf http://localhost:9095/api/health && echo
+```
+
+### Verify after a config edit
+
+```bash
+INSTALL_DIR="$HOME/.openclaw/retry-watchdog"
+systemctl --user restart retry-watchdog.service
+sleep 2
+curl -sf http://localhost:9095/api/settings && echo
+```
+
+(Settings table values are seeded from `config.json` only on first init; the UI-editable defaults persist in SQLite afterward. Restart picks up everything else: paths, sender binary, sender env, healthcheck/predicate rules.)
+
+### WSL2 note
+
+On WSL2 Ubuntu, the user-level systemd-unit and the `gog-send` TLS workaround (`SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`) are baked into `retry-watchdog.service.example`. To run commands targeting the WSL daemon from a Windows PowerShell prompt, wrap them with `wsl -u <user> -- bash -c "<command>"`.
 
 ## Wiring an OpenClaw cron
 
