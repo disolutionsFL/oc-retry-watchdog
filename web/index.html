@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw Retry Watchdog</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+  <header>
+    <h1>OpenClaw Retry Watchdog</h1>
+    <div class="header-meta">
+      <span id="version-pill" class="pill">loading…</span>
+      <button id="settings-btn" class="btn-link">Settings</button>
+      <button id="refresh-btn" class="btn-link">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="empty-state" class="hidden">
+      <p>No crons registered yet. They'll auto-register here on first failure once you wire OpenClaw's <code>--failure-alert-mode webhook</code> to <code>http://localhost:9095/webhook</code>.</p>
+    </section>
+
+    <table id="cron-table" class="hidden">
+      <thead>
+        <tr>
+          <th>Cron</th>
+          <th>Schedule</th>
+          <th class="num">Max Retries</th>
+          <th>Alert Recipient</th>
+          <th class="num">Retries (today / 30d)</th>
+          <th class="num">Alerts (today / 30d)</th>
+          <th>Last Retried</th>
+          <th>Last Alerted</th>
+          <th>Enabled</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cron-tbody"></tbody>
+    </table>
+
+    <p class="hint">v0.1 — predicate verification and missed-run heartbeat coming in v0.2/v0.3.</p>
+  </main>
+
+  <dialog id="settings-modal">
+    <form method="dialog">
+      <h2>Settings</h2>
+
+      <label>Default alert recipient:
+        <input type="email" name="default_alert_recipient" id="setting-recipient">
+      </label>
+
+      <label>Default max retries:
+        <input type="number" name="default_max_retries" id="setting-max-retries" min="0" max="10">
+      </label>
+
+      <hr>
+      <p><small>Sender account: <code id="setting-sender">(loading)</code></small></p>
+      <p><small>Daemon: <code id="setting-version">(loading)</code> · uptime <code id="setting-uptime">(loading)</code></small></p>
+
+      <menu>
+        <button type="button" id="settings-save">Save</button>
+        <button type="button" id="settings-cancel">Cancel</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="toast"></dialog>
+
+  <script src="/web/app.js"></script>
+</body>
+</html>

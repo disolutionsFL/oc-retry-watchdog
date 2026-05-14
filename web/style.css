@@ -1,0 +1,86 @@
+:root {
+  --bg: #fafaf8;
+  --fg: #1c1c1c;
+  --muted: #6b6b6b;
+  --border: #e0e0d8;
+  --accent: #1a4f7a;
+  --good: #2e7d32;
+  --warn: #c97a00;
+  --bad: #b21c1c;
+  --bg-row-hover: #f1f1ec;
+  --bg-pill: #efefe9;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
+
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; border-bottom: 1px solid var(--border);
+  background: white;
+}
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.header-meta { display: flex; align-items: center; gap: 12px; }
+.pill {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; background: var(--bg-pill); color: var(--muted);
+}
+.btn-link {
+  background: none; border: none; cursor: pointer; color: var(--accent);
+  font-size: 13px; padding: 4px 8px;
+}
+.btn-link:hover { text-decoration: underline; }
+
+main { padding: 16px 24px; }
+
+table { width: 100%; border-collapse: collapse; background: white; border: 1px solid var(--border); font-size: 13px; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+th { background: #f5f5f0; font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover { background: var(--bg-row-hover); }
+
+tr.row-retried-only { border-left: 3px solid var(--warn); }
+tr.row-alerted { border-left: 3px solid var(--bad); }
+tr.row-alert-only { background: #fafafa; color: var(--muted); }
+tr.row-disabled td { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted); }
+
+input.inline {
+  width: 100%; min-width: 0; padding: 4px 6px; font-size: 13px;
+  border: 1px solid transparent; border-radius: 3px; background: transparent;
+}
+input.inline:hover { border-color: var(--border); }
+input.inline:focus { border-color: var(--accent); outline: none; background: white; }
+input.inline.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.actions { white-space: nowrap; }
+.actions button {
+  margin-right: 4px; padding: 3px 8px; font-size: 12px; border-radius: 3px;
+  border: 1px solid var(--border); background: white; cursor: pointer;
+}
+.actions button:hover { border-color: var(--accent); color: var(--accent); }
+.actions button.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+.hint { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.hidden { display: none !important; }
+
+dialog {
+  border: 1px solid var(--border); border-radius: 6px; padding: 20px;
+  min-width: 320px; background: white;
+}
+dialog::backdrop { background: rgba(0,0,0,0.3); }
+dialog h2 { margin-top: 0; font-size: 16px; }
+dialog label { display: block; margin: 12px 0; font-size: 13px; }
+dialog input { display: block; width: 100%; padding: 6px 8px; margin-top: 4px; border: 1px solid var(--border); border-radius: 3px; font-size: 13px; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; padding: 0; }
+dialog menu button { padding: 6px 14px; border-radius: 3px; border: 1px solid var(--border); background: white; cursor: pointer; font-size: 13px; }
+dialog menu button:hover { border-color: var(--accent); color: var(--accent); }
+
+#toast {
+  position: fixed; right: 20px; bottom: 20px; left: auto; top: auto;
+  background: var(--fg); color: white; padding: 10px 16px; border-radius: 4px;
+  font-size: 13px; border: none; max-width: 400px;
+}
+#toast.bad { background: var(--bad); }
+#toast.good { background: var(--good); }
+
+code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-size: 12px; }

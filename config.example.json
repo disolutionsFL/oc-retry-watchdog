@@ -1,0 +1,73 @@
+{
+  "_comment": "Copy to config.json next to server.py and edit values. Or point RETRY_WATCHDOG_CONFIG env var at a private path.",
+
+  "server": {
+    "port": 9095,
+    "ui_bind": "0.0.0.0",
+    "webhook_bind": "127.0.0.1",
+    "timezone": "America/New_York"
+  },
+
+  "db": {
+    "path": "~/.openclaw/retry-watchdog/retry.db"
+  },
+
+  "alert": {
+    "_comment": "default_recipient is used when a cron has no per-cron alert_recipient set. sender_binary must be a CLI that accepts --account/--to/--subject/--body (e.g. gog-send).",
+    "default_recipient": "you@example.com",
+    "sender_binary": "/path/to/gog-send",
+    "sender_account": "your-sender@gmail.com",
+    "sender_env": {
+      "_comment": "Extra env vars passed to the sender subprocess. WSL2 + gog-send needs SSL_CERT_FILE.",
+      "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt"
+    }
+  },
+
+  "retries": {
+    "default_max": 1,
+    "enabled": true
+  },
+
+  "heartbeat": {
+    "_comment": "v0.3 — used by the heartbeat scanner for missed-run detection. v0.1 ignores this section.",
+    "interval_minutes": 5,
+    "grace_period_minutes": 10,
+    "lookback_hours": 6,
+    "jobs_json_path": "~/.openclaw/cron/jobs.json",
+    "runs_dir_path": "~/.openclaw/cron/runs"
+  },
+
+  "openclaw_cli": "openclaw",
+  "ui_url": "http://localhost:9095/",
+
+  "predicates": {
+    "_comment": "v0.2 — per-cron predicate rules. v0.1 ignores this section. Key is cron UUID.",
+    "00000000-0000-0000-0000-000000000000": [
+      {
+        "type": "file_mtime",
+        "path": "/path/to/output-{YESTERDAY}.json",
+        "max_age_minutes": 30,
+        "description": "Output file must have been written within 30 min of cron fire"
+      },
+      {
+        "type": "json_field_count",
+        "path": "/path/to/output-{YESTERDAY}.json",
+        "json_path": "$[?(@.result != null)]",
+        "count_min": 1,
+        "description": "At least one record has a non-null result"
+      }
+    ]
+  },
+
+  "healthchecks": {
+    "_comment": "v0.2 — pre-retry healthchecks. If a check fails, the watchdog does NOT retry (avoids retrying into a broken dependency).",
+    "00000000-0000-0000-0000-000000000000": [
+      {
+        "type": "http_health",
+        "url": "http://localhost:8100/v1/models",
+        "timeout_seconds": 5,
+        "description": "Upstream model server must be responding"
+      }
+    ]
+  }
+}

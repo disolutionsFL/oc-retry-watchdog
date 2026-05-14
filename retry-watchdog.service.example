@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenClaw Retry Watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace placeholders with real paths for your install.
+ExecStart=/usr/bin/python3 %h/.openclaw/retry-watchdog/code/server.py
+Environment=RETRY_WATCHDOG_CONFIG=%h/.openclaw/retry-watchdog/config.json
+# WSL2 + gog-send TLS workaround; harmless on other hosts.
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
