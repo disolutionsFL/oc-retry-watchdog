@@ -360,11 +360,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/crons":
             tz = WATCHDOG.cfg["server"]["timezone"]
             crons = db_mod.list_crons_with_counts(WATCHDOG.conn, today_iso_date(tz))
-            # Annotate each cron with predicate count
+            # Annotate each cron with predicate count + descriptions
             cfg_preds = WATCHDOG.cfg.get("predicates", {}) or {}
             for c in crons:
                 preds = cfg_preds.get(c["cron_id"])
-                c["predicates_count"] = len(preds) if isinstance(preds, list) else 0
+                if isinstance(preds, list):
+                    c["predicates_count"] = len(preds)
+                    c["predicates_descriptions"] = [
+                        p.get("description", p.get("type", "?")) for p in preds
+                    ]
+                else:
+                    c["predicates_count"] = 0
+                    c["predicates_descriptions"] = []
             self._send_json(200, crons)
         elif path.startswith("/api/crons/") and path.endswith("/history"):
             cron_id = path.split("/")[3]

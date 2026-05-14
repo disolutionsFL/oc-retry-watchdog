@@ -76,9 +76,14 @@ function renderCrons() {
     const tr = document.createElement("tr");
     tr.className = rowClass(c);
     const predCount = c.predicates_count || 0;
+    const predDescs = c.predicates_descriptions || [];
+    const predTitle = predCount > 0
+      ? `${predCount} predicate(s) checked after every successful run:\n\n` +
+        predDescs.map((d, i) => `${i + 1}. ${d}`).join("\n\n")
+      : "No predicates configured — only webhook (status=error) failures trigger an alert for this cron. Add per-cron rules to config.json + restart to enable side-effect verification.";
     const predBadge = predCount > 0
-      ? `<span class="badge-pred active" title="${predCount} predicate(s) configured">${predCount}</span>`
-      : `<span class="badge-pred" title="No predicates configured">0</span>`;
+      ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}">${predCount}</span>`
+      : `<span class="badge-pred" title="${escapeAttr(predTitle)}">0</span>`;
     tr.innerHTML = `
       <td><strong>${escapeHtml(c.name || c.cron_id)}</strong><br><small><code>${c.cron_id}</code></small></td>
       <td><code>${escapeHtml(c.schedule || "?")}</code></td>

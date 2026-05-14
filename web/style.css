@@ -98,5 +98,17 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
   display: inline-block; min-width: 22px; padding: 1px 6px;
   border-radius: 10px; font-size: 11px; text-align: center;
   background: var(--bg-pill); color: var(--muted); font-variant-numeric: tabular-nums;
+  cursor: help;
 }
 .badge-pred.active { background: #e3eff7; color: var(--accent); font-weight: 600; }
+.badge-pred:hover { box-shadow: 0 0 0 1px var(--accent); }
+
+.help {
+  display: inline-block; width: 14px; height: 14px; line-height: 12px;
+  margin-left: 4px; padding: 0; vertical-align: middle;
+  font-size: 10px; font-weight: 600; text-align: center;
+  color: var(--muted); background: white;
+  border: 1px solid var(--border); border-radius: 50%;
+  cursor: help; text-transform: none; letter-spacing: 0;
+}
+.help:hover { color: var(--accent); border-color: var(--accent); }
