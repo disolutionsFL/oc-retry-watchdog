@@ -119,9 +119,130 @@ curl -sf http://localhost:9095/api/settings && echo
 
 (Settings table values are seeded from `config.json` only on first init; the UI-editable defaults persist in SQLite afterward. Restart picks up everything else: paths, sender binary, sender env, healthcheck/predicate rules.)
 
-### WSL2 note
+## Running on Windows + WSL2
 
-On WSL2 Ubuntu, the user-level systemd-unit and the `gog-send` TLS workaround (`SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`) are baked into `retry-watchdog.service.example`. To run commands targeting the WSL daemon from a Windows PowerShell prompt, wrap them with `wsl -u <user> -- bash -c "<command>"`.
+WSL2 Ubuntu is the typical host for OpenClaw on a Windows machine. The watchdog runs cleanly there but a few WSL-specific gotchas are worth knowing about.
+
+### Invoking commands from PowerShell
+
+Wrap any of the commands in the sections above to target your WSL distro:
+
+```powershell
+wsl -u <user> -- bash -c "<command>"
+```
+
+For multi-line scripts (file edits, deploys), stage the script to disk via a PowerShell here-string and invoke from WSL via the `/mnt/c/` path. Out-File writes CRLF endings — strip them inside WSL before running:
+
+```powershell
+@'
+#!/bin/bash
+# your bash script here
+'@ | Out-File -Encoding ASCII C:\temp\my-script.sh
+
+wsl -u <user> -- bash -c "sed -i 's/\r\$//' /mnt/c/temp/my-script.sh && bash /mnt/c/temp/my-script.sh"
+```
+
+### Mirrored-mode publish failures (the most likely problem you'll hit)
+
+WSL2's mirrored networking mode has a known bug ([Microsoft/WSL #12703](https://github.com/microsoft/WSL/issues/12703), [#40287](https://github.com/microsoft/WSL/pull/40287)) where a successful `0.0.0.0:<port>` bind *inside* WSL fails to publish that port to the host's external network interfaces. Windows-side `localhost:<port>` reaches the WSL service, but inbound from another machine on your LAN / Tailscale / wireguard times out.
+
+Symptoms — only the first of these tests will succeed:
+
+```powershell
+Test-NetConnection localhost -Port 9095 -InformationLevel Quiet                   # True
+Test-NetConnection <your-LAN-or-Tailscale-IP> -Port 9095 -InformationLevel Quiet  # False
+```
+
+while inside WSL:
+
+```bash
+ss -tlnp | grep 9095   # Shows 0.0.0.0:9095 LISTEN — bind is fine
+```
+
+The community workaround (and what we run in production): have the daemon bind a different *internal* port, and add a Windows-side `netsh portproxy` listener on the *external* port that forwards to the internal port. Clients still hit the external port — the shift is invisible to them.
+
+**Step 1**. Edit `config.json` to bind an internal port (e.g. `9094`):
+
+```json
+{ "server": { "port": 9094, "ui_bind": "0.0.0.0", ... } }
+```
+
+**Step 2**. Add the portproxy listener on the external port (admin PowerShell):
+
+```powershell
+netsh interface portproxy add v4tov4 `
+    listenport=9095 listenaddress=0.0.0.0 `
+    connectport=9094 connectaddress=127.0.0.1
+```
+
+**Step 3**. Restart the daemon and verify:
+
+```powershell
+wsl -u <user> -- bash -c "systemctl --user restart retry-watchdog.service"
+netsh interface portproxy show all
+Test-NetConnection <your-LAN-or-Tailscale-IP> -Port 9095 -InformationLevel Quiet  # Now True
+```
+
+> **Important — do NOT use the same port for the portproxy listener and the WSL bind.** In mirrored mode the port namespace is shared between Windows and WSL. If both try to listen on the same port, one wins silently and the other appears to work but accepts no traffic. Always use different ports (we use 9094 internal / 9095 external).
+
+If the portproxy stops responding after a network change or sleep / wake, delete + re-add:
+
+```powershell
+netsh interface portproxy delete v4tov4 listenport=9095 listenaddress=0.0.0.0
+netsh interface portproxy add v4tov4 listenport=9095 listenaddress=0.0.0.0 connectport=9094 connectaddress=127.0.0.1
+```
+
+Both the portproxy rule and any firewall rules persist across reboots.
+
+### Windows Firewall
+
+For each port you expose externally, add an inbound rule (admin PowerShell):
+
+```powershell
+New-NetFirewallRule -DisplayName "oc-retry-watchdog (9095)" `
+    -Direction Inbound -Protocol TCP -LocalPort 9095 `
+    -Action Allow -Profile Any
+```
+
+`-Profile Any` works on Private/Public/Domain. Verify the rule is enabled and binds the right protocol:
+
+```powershell
+Get-NetFirewallRule -DisplayName "oc-retry-watchdog (9095)" |
+    Format-List Name, Enabled, Profile, Direction, Action
+```
+
+### `gog-send` TLS error on WSL
+
+If your sender binary is a Go program (e.g. `gog-send`) and the alert email fails with `x509: certificate signed by unknown authority`, set `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` in the subprocess environment. Add it under `alert.sender_env` in `config.json`:
+
+```json
+"alert": {
+  ...
+  "sender_env": {
+    "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt"
+  }
+}
+```
+
+The included `retry-watchdog.service.example` also sets this on the service environment as a backup.
+
+### Linger for boot-time startup
+
+User-level systemd services only start when the user logs in by default. To start the watchdog automatically at boot (and survive logout), enable linger once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+### Where to find logs
+
+The systemd unit pipes stdout/stderr to the user journal:
+
+```bash
+journalctl --user-unit retry-watchdog.service -f         # tail live
+journalctl --user-unit retry-watchdog.service -n 100     # last 100 lines
+journalctl --user-unit retry-watchdog.service --since "1 hour ago"
+```
 
 ## Wiring an OpenClaw cron
 
