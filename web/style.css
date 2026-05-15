@@ -242,12 +242,15 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
 .agent-filter-chip:not(.active) { text-decoration: line-through; opacity: 0.55; }
 
 /* ----- predicate editor modal ----- */
+/* Default display:none is provided by the browser for closed <dialog>.
+   Only apply layout when the dialog is actually open. */
 .predicates-modal {
   width: min(90vw, 720px); max-height: 85vh;
   padding: 0;
+}
+.predicates-modal[open] {
   display: flex; flex-direction: column;
 }
-.predicates-modal[open] { display: flex; }
 .pred-modal-header { padding: 16px 20px 4px 20px; }
 .pred-modal-header h2 { margin: 0 0 2px 0; font-size: 16px; }
 .pred-modal-cronid { color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
