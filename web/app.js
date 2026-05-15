@@ -561,10 +561,32 @@ document.addEventListener("click", async (e) => {
     t.disabled = true;
     try {
       const r = await api("POST", `/api/openclaw-jobs/${t.dataset.id}/unwire`);
-      toast(r.ok ? "Unwired" : `Unwire failed: ${r.output || "?"}`, r.ok ? "good" : "bad");
-      const data = await loadAdminData();
-      renderAdminModal(data);
-      loadAll();
+      if (!r.ok) {
+        toast(`Unwire failed: ${r.output || "?"}`, "bad");
+        t.disabled = false;
+      } else {
+        toast("Unwired", "good");
+        // Follow-up prompt: also remove from watchdog DB so it stops
+        // appearing in the dashboard?
+        const removeFromWatchdog = await appConfirm({
+          title: "Also remove from watchdog dashboard?",
+          message: `The cron is unwired from OpenClaw but still appears in the watchdog dashboard (with any history + predicates intact). Remove it from the watchdog DB and clear its predicates? Retry/alert event rows stay for audit.`,
+          confirmLabel: "Remove",
+          confirmKind: "danger",
+          cancelLabel: "Keep in dashboard",
+        });
+        if (removeFromWatchdog) {
+          try {
+            await api("DELETE", `/api/crons/${t.dataset.id}`);
+            toast("Removed from watchdog", "good");
+          } catch (err) {
+            toast(`Remove failed: ${err.message}`, "bad");
+          }
+        }
+        const data = await loadAdminData();
+        renderAdminModal(data);
+        loadAll();
+      }
     } catch (err) { toast(`Unwire failed: ${err.message}`, "bad"); t.disabled = false; }
     return;
   }
