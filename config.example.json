@@ -88,6 +88,13 @@
     ]
   },
 
+  "ai": {
+    "_comment": "Optional AI-assisted predicate suggestions. When the operator enables AI in Settings and picks a model, the predicate editor gets a 'Suggest with AI' button that asks the chosen model to propose predicates based on the cron's prompt + recent run summaries. Models are picked from openclaw.json's configured providers. Default is disabled (opt-in).",
+    "openclaw_config_path": "~/.openclaw/openclaw.json",
+    "max_tokens": 1024,
+    "timeout_seconds": 60
+  },
+
   "healthchecks": {
     "_comment": "v0.2 placeholder — wired in v0.2.x. Pre-retry checks: if any healthcheck fails when a webhook failure comes in, the watchdog skips the retry (avoids retrying into a broken dependency) and fires a dependency-unhealthy alert instead.",
     "00000000-0000-0000-0000-000000000000": [

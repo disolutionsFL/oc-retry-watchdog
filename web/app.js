@@ -262,6 +262,14 @@ function openPredicateEditor(cronId) {
     $("#pred-modal-cron-name").textContent = cron.name || cron.cron_id;
     $("#pred-modal-cron-id").textContent = cron.cron_id;
     renderPredicateModal();
+    // Suggest-with-AI button visible only when AI is enabled + a primary model is set
+    const aiBtn = $("#pred-suggest-btn");
+    if (state.settings.ai_enabled && state.settings.ai_primary_model) {
+      aiBtn.classList.remove("hidden");
+      aiBtn.disabled = false;
+    } else {
+      aiBtn.classList.add("hidden");
+    }
     $("#predicates-modal").showModal();
   }).catch(e => toast(`Load predicates failed: ${e.message}`, "bad"));
 }
@@ -663,6 +671,32 @@ $("#agent-filter-chips").addEventListener("click", (e) => {
 
 // ----- Predicate editor modal handlers -----
 
+$("#pred-suggest-btn").addEventListener("click", async () => {
+  const btn = $("#pred-suggest-btn");
+  // Snapshot any in-progress form state first so it isn't lost
+  try { predEditorState.predicates = readPredicatesFromForm(); } catch {}
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "✨ Thinking…";
+  try {
+    const r = await api("POST", `/api/crons/${predEditorState.cronId}/predicates/suggest`);
+    if (!r.ok || !Array.isArray(r.predicates) || r.predicates.length === 0) {
+      const detail = r.error || (r.tried && r.tried[0] && r.tried[0].error) || "no suggestions returned";
+      toast(`AI suggest failed: ${detail}`, "bad");
+      return;
+    }
+    // Append (don't replace) so existing predicates are preserved
+    predEditorState.predicates = predEditorState.predicates.concat(r.predicates);
+    renderPredicateModal();
+    toast(`Added ${r.predicates.length} suggestion(s) from ${r.model_used} (${r.slot}). Review + edit before saving.`, "good");
+  } catch (e) {
+    toast(`AI suggest failed: ${e.message}`, "bad");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
 $("#pred-add-btn").addEventListener("click", () => {
   // Snapshot in-progress form values into state before re-render
   try {
@@ -737,12 +771,27 @@ $("#hb-scan-now").addEventListener("click", async () => {
   } catch (e) { toast(`Scan failed: ${e.message}`, "bad"); }
 });
 
-$("#settings-btn").addEventListener("click", () => {
+$("#settings-btn").addEventListener("click", async () => {
   $("#setting-recipient").value = state.settings.default_alert_recipient || "";
   $("#setting-max-retries").value = state.settings.default_max_retries ?? 1;
   $("#setting-sender").textContent = state.settings.sender_account || "(not configured)";
   $("#setting-version").textContent = `v${state.settings.daemon_version || "?"}`;
   $("#setting-uptime").textContent = uptimeStr(state.settings.daemon_uptime_seconds);
+  // AI section
+  $("#setting-ai-enabled").checked = !!state.settings.ai_enabled;
+  // Populate model dropdowns from openclaw.json
+  try {
+    const models = await api("GET", "/api/ai/models");
+    const opts = `<option value="">— none —</option>` +
+      (models || []).map(m =>
+        `<option value="${escapeAttr(m.key)}">${escapeHtml(m.label)}</option>`).join("");
+    $("#setting-ai-primary").innerHTML = opts;
+    $("#setting-ai-primary").value = state.settings.ai_primary_model || "";
+    $("#setting-ai-fallback").innerHTML = opts;
+    $("#setting-ai-fallback").value = state.settings.ai_fallback_model || "";
+  } catch (e) {
+    toast(`Could not load model list: ${e.message}`, "bad");
+  }
   $("#settings-modal").showModal();
 });
 
@@ -751,6 +800,9 @@ $("#settings-save").addEventListener("click", async () => {
     await api("PATCH", "/api/settings", {
       default_alert_recipient: $("#setting-recipient").value,
       default_max_retries: parseInt($("#setting-max-retries").value, 10),
+      ai_enabled: $("#setting-ai-enabled").checked,
+      ai_primary_model: $("#setting-ai-primary").value || "",
+      ai_fallback_model: $("#setting-ai-fallback").value || "",
     });
     toast("Settings saved", "good");
     $("#settings-modal").close();

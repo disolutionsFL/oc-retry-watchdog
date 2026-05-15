@@ -102,6 +102,27 @@
       </label>
 
       <hr>
+      <h3 class="settings-subhead">AI assist (optional)</h3>
+      <label class="settings-toggle">
+        <input type="checkbox" id="setting-ai-enabled">
+        <span>Enable AI-suggested predicates</span>
+      </label>
+      <p class="settings-help">When on, the predicate editor gets a <em>Suggest with AI</em> button that asks a model from OpenClaw's configured providers to propose predicates for that cron. Suggestions are <strong>appended</strong> to the form — nothing is saved without your review.</p>
+
+      <label>Primary model:
+        <select id="setting-ai-primary">
+          <option value="">— none —</option>
+        </select>
+      </label>
+
+      <label>Fallback model:
+        <select id="setting-ai-fallback">
+          <option value="">— none —</option>
+        </select>
+      </label>
+      <p class="settings-help">Both lists are populated from <code>openclaw.json</code>'s configured providers + models. Fallback is used if the primary errors or returns unparseable JSON.</p>
+
+      <hr>
       <p><small>Sender account: <code id="setting-sender">(loading)</code></small></p>
       <p><small>Daemon: <code id="setting-version">(loading)</code> · uptime <code id="setting-uptime">(loading)</code></small></p>
 
@@ -124,6 +145,7 @@
     <div id="pred-modal-list"></div>
     <div class="pred-modal-actions-bottom">
       <button type="button" id="pred-add-btn" class="btn-link">+ Add predicate</button>
+      <button type="button" id="pred-suggest-btn" class="btn-link hidden">✨ Suggest with AI</button>
       <span class="grow"></span>
       <button type="button" id="pred-cancel-btn">Cancel</button>
       <button type="button" id="pred-save-btn" class="primary">Save</button>

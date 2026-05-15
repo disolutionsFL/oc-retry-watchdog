@@ -30,8 +30,9 @@ import db as db_mod
 import alert as alert_mod
 import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
+import ai as ai_mod
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -70,6 +71,14 @@ DEFAULT_CONFIG = {
     "ui_url": "http://localhost:9095/",
     "predicates": {},
     "healthchecks": {},
+    "ai": {
+        # When the operator enables AI in Settings, the predicate editor gets
+        # a "Suggest with AI" button. Primary + fallback models are picked
+        # from openclaw.json's configured providers.
+        "openclaw_config_path": "~/.openclaw/openclaw.json",
+        "max_tokens": 1024,
+        "timeout_seconds": 60,
+    },
 }
 
 
@@ -110,6 +119,10 @@ def settings_defaults_for_db(cfg: dict) -> dict[str, str]:
         "default_alert_recipient": cfg["alert"].get("default_recipient", ""),
         "default_max_retries": str(int(cfg["retries"].get("default_max", 1))),
         "sender_account": cfg["alert"].get("sender_account", ""),
+        # AI is off until the operator picks a primary model in Settings
+        "ai_enabled": "0",
+        "ai_primary_model": "",
+        "ai_fallback_model": "",
     }
 
 
@@ -210,6 +223,90 @@ class Watchdog:
     def manual_retry(self, cron_id: str) -> dict:
         cron = self._ensure_cron(cron_id)
         return self._fire_retry(cron, None, None, "manual")
+
+    # ----- AI predicate suggestion -----
+
+    def suggest_predicates(self, cron_id: str) -> dict:
+        """Ask the configured AI model to suggest predicates for this cron.
+        Reads the cron's payload from jobs.json + recent run summaries,
+        sends them as a chat prompt, parses the response.
+
+        Tries primary model first; on failure (transport, parse, or
+        validation) falls back to secondary if configured. Returns:
+          {ok, predicates, model_used, error?}
+        """
+        s = self._settings()
+        if s.get("ai_enabled", "0") not in ("1", "true", "True"):
+            raise RuntimeError("AI is not enabled in settings")
+        primary = s.get("ai_primary_model", "").strip()
+        fallback = s.get("ai_fallback_model", "").strip()
+        if not primary:
+            raise RuntimeError("no primary AI model selected in settings")
+
+        # Gather context: cron metadata + prompt + recent summaries +
+        # any predicates already configured
+        cfg_ai = self.cfg.get("ai") or {}
+        oc_cfg_path = cfg_ai.get("openclaw_config_path", "~/.openclaw/openclaw.json")
+        max_tokens = int(cfg_ai.get("max_tokens", 1024))
+        timeout = int(cfg_ai.get("timeout_seconds", 60))
+
+        jobs = oc.read_jobs_with_alerts(self.cfg["heartbeat"]["jobs_json_path"])
+        job = next((j for j in jobs if j.get("cron_id") == cron_id), None)
+        if not job:
+            raise RuntimeError(f"cron {cron_id} not found in jobs.json")
+
+        # Pull the message body from raw jobs.json (read_jobs_with_alerts
+        # doesn't include payload by design)
+        raw_jobs = oc.read_jobs_json(self.cfg["heartbeat"]["jobs_json_path"])
+        raw = next((j for j in raw_jobs if j.get("id") == cron_id), None) or {}
+        prompt_text = ((raw.get("payload") or {}).get("message") or "")
+
+        # Recent run summaries from cron/runs/<id>.jsonl
+        recent: list[str] = []
+        runs_dir = self.cfg["heartbeat"]["runs_dir_path"]
+        latest = oc.last_run_for(cron_id, runs_dir)
+        if latest:
+            recent.append(latest.get("summary") or "")
+
+        existing_preds = (self.cfg.get("predicates") or {}).get(cron_id) or []
+
+        messages = ai_mod.build_messages(
+            cron_name=job.get("name") or cron_id,
+            agent=job.get("agent") or "?",
+            schedule=job.get("schedule") or "?",
+            cron_prompt=prompt_text,
+            recent_summaries=recent,
+            existing_predicates=existing_preds,
+        )
+
+        tried: list[dict] = []
+        for slot, key in [("primary", primary), ("fallback", fallback)]:
+            if not key:
+                continue
+            mdef = ai_mod.get_model_endpoint(oc_cfg_path, key)
+            if not mdef:
+                tried.append({"slot": slot, "key": key, "error": "model not found in openclaw.json"})
+                continue
+            ok, content = ai_mod.chat_completion(
+                base_url=mdef["base_url"],
+                model=mdef["model_id"],
+                messages=messages,
+                api_key=mdef.get("api_key"),
+                max_tokens=max_tokens,
+                timeout_seconds=timeout,
+            )
+            if not ok:
+                tried.append({"slot": slot, "key": key, "error": content[:300]})
+                continue
+            preds, err = ai_mod.parse_predicates(content)
+            if not preds:
+                tried.append({"slot": slot, "key": key, "error": f"parse: {err}",
+                              "raw_first_300": content[:300]})
+                continue
+            return {"ok": True, "predicates": preds, "model_used": key,
+                    "slot": slot, "tried": tried}
+        return {"ok": False, "predicates": [], "model_used": None,
+                "error": "all configured models failed", "tried": tried}
 
     # ----- OpenClaw integration admin -----
 
@@ -506,9 +603,15 @@ class Handler(BaseHTTPRequestHandler):
                 "default_max_retries": int(s.get("default_max_retries", "1")),
                 "sender_account": s.get("sender_account", ""),
                 "openclaw_instance_name": WATCHDOG.cfg.get("openclaw_instance_name", ""),
+                "ai_enabled": s.get("ai_enabled", "0") in ("1", "true", "True"),
+                "ai_primary_model": s.get("ai_primary_model", ""),
+                "ai_fallback_model": s.get("ai_fallback_model", ""),
                 "daemon_version": VERSION,
                 "daemon_uptime_seconds": int(time.time() - _START_TIME),
             })
+        elif path == "/api/ai/models":
+            models = ai_mod.read_openclaw_models(WATCHDOG.cfg["ai"]["openclaw_config_path"])
+            self._send_json(200, models)
         elif path == "/api/crons":
             tz = WATCHDOG.cfg["server"]["timezone"]
             crons = db_mod.list_crons_with_counts(WATCHDOG.conn, today_iso_date(tz))
@@ -583,6 +686,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, stats)
             return
 
+        # POST /api/crons/<id>/predicates/suggest
+        if (len(m) >= 6 and m[1] == "api" and m[2] == "crons"
+                and m[4] == "predicates" and m[5] == "suggest"):
+            cron_id = m[3]
+            try:
+                result = WATCHDOG.suggest_predicates(cron_id)
+            except RuntimeError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, result)
+            return
+
         # POST /api/openclaw-jobs/<id>/wire  | /unwire
         if len(m) >= 5 and m[1] == "api" and m[2] == "openclaw-jobs":
             cron_id = m[3]
@@ -633,9 +748,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/settings":
+            allowed = {"default_alert_recipient", "default_max_retries",
+                       "ai_enabled", "ai_primary_model", "ai_fallback_model"}
             for k, v in body.items():
-                if k not in ("default_alert_recipient", "default_max_retries"):
+                if k not in allowed:
                     continue
+                if k == "ai_enabled":
+                    v = "1" if v in (True, "true", "True", "1", 1) else "0"
                 db_mod.set_setting(WATCHDOG.conn, k, str(v))
             self._send_json(200, WATCHDOG._settings())
             return
