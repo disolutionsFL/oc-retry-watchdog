@@ -67,7 +67,7 @@ function renderAdminModal(data) {
       : `<span class="badge-pred" data-action="edit-predicates" data-id="${j.cron_id}" title="Click to add predicates">0</span>`;
     const wireBtn = j.webhook_wired_here
       ? `<button class="btn-mini danger" data-action="unwire-cron" data-id="${j.cron_id}">Unwire</button>`
-      : `<button class="btn-mini" data-action="wire-cron" data-id="${j.cron_id}">Wire</button>`;
+      : `<button class="btn-mini success" data-action="wire-cron" data-id="${j.cron_id}">Wire</button>`;
     return `
       <tr>
         <td>

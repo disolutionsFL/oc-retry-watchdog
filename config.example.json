@@ -5,7 +5,9 @@
     "port": 9095,
     "ui_bind": "0.0.0.0",
     "webhook_bind": "127.0.0.1",
-    "timezone": "America/New_York"
+    "timezone": "America/New_York",
+    "_webhook_url_comment": "Optional override for the URL that the Admin view considers 'this watchdog's webhook'. Use it when the daemon binds an internal port that's fronted by a portproxy (e.g. WSL2 bind 9094, externally reachable at 9095). Empty = auto-compute as http://localhost:<port>/webhook.",
+    "webhook_url": ""
   },
 
   "db": {

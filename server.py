@@ -44,6 +44,11 @@ DEFAULT_CONFIG = {
         "ui_bind": "0.0.0.0",
         "webhook_bind": "127.0.0.1",
         "timezone": "America/New_York",
+        # Optional override. When the daemon binds an internal port that's
+        # fronted by a portproxy (e.g. WSL2 -> Windows), set this to the
+        # externally-reachable URL the openclaw cron will actually POST to.
+        # Empty -> auto-compute from `port` as "http://localhost:<port>/webhook".
+        "webhook_url": "",
     },
     "db": {"path": "~/.openclaw/retry-watchdog/retry.db"},
     "alert": {
@@ -209,7 +214,14 @@ class Watchdog:
     # ----- OpenClaw integration admin -----
 
     def _expected_webhook_url(self) -> str:
-        """The webhook URL we'd want each OpenClaw cron to be wired to."""
+        """The webhook URL we'd want each OpenClaw cron to be wired to.
+
+        Prefers config `server.webhook_url` (lets WSL+portproxy deployments
+        point at the external port rather than the internal bind). Falls
+        back to `http://localhost:<server.port>/webhook`."""
+        explicit = (self.cfg["server"].get("webhook_url") or "").strip()
+        if explicit:
+            return explicit
         port = int(self.cfg["server"]["port"])
         return f"http://localhost:{port}/webhook"
 

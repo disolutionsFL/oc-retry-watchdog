@@ -367,13 +367,23 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
 .in-watchdog-no  { color: var(--muted); }
 
 .btn-mini {
-  padding: 3px 9px; font-size: 11px; border-radius: 3px;
+  padding: 3px 10px; font-size: 11px; font-weight: 600; border-radius: 3px;
   border: 1px solid var(--border); background: var(--bg-surface);
   cursor: pointer; color: var(--fg);
+  letter-spacing: 0.2px;
 }
 .btn-mini:hover { border-color: var(--accent); color: var(--accent); }
-.btn-mini.danger:hover { border-color: var(--bad); color: var(--bad); }
 .btn-mini:disabled { opacity: 0.4; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
+
+/* Solid green for affirmative/wire actions, solid red for destructive/unwire/remove */
+.btn-mini.success {
+  background: var(--good); color: white; border-color: var(--good);
+}
+.btn-mini.success:hover { opacity: 0.88; color: white; border-color: var(--good); }
+.btn-mini.danger {
+  background: var(--bad); color: white; border-color: var(--bad);
+}
+.btn-mini.danger:hover { opacity: 0.88; color: white; border-color: var(--bad); }
 
 tr.row-orphan { background: rgba(178,28,28,0.06); }
 
