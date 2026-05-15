@@ -75,6 +75,58 @@ def read_jobs_json(path: str) -> list[dict[str, Any]]:
     return [j for j in jobs if isinstance(j, dict)]
 
 
+def read_jobs_with_alerts(jobs_json_path: str) -> list[dict[str, Any]]:
+    """Read jobs.json and normalize each entry to a flat dict for the admin
+    view: cron_id, name, schedule, timezone, agent, enabled, failure_alert."""
+    out: list[dict[str, Any]] = []
+    for j in read_jobs_json(jobs_json_path):
+        sched = j.get("schedule") or {}
+        if not isinstance(sched, dict):
+            sched = {}
+        out.append({
+            "cron_id": j.get("id"),
+            "name": j.get("name"),
+            "schedule": sched.get("expr"),
+            "timezone": sched.get("tz"),
+            "agent": j.get("agentId"),
+            "enabled": bool(j.get("enabled")),
+            "failure_alert": j.get("failureAlert") if isinstance(j.get("failureAlert"), dict) else None,
+        })
+    return out
+
+
+def cron_wire_webhook(openclaw_cli: str, cron_id: str, webhook_url: str,
+                      after: int = 1, timeout_seconds: int = 30
+                      ) -> tuple[bool, str]:
+    """Run `openclaw cron edit` to add a failure-alert webhook to a cron.
+    Returns (success, combined_output)."""
+    try:
+        result = subprocess.run(
+            [os.path.expanduser(openclaw_cli), "cron", "edit", cron_id,
+             "--failure-alert", "--failure-alert-mode", "webhook",
+             "--failure-alert-to", webhook_url,
+             "--failure-alert-after", str(after)],
+            capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return False, f"(exec error: {e})"
+    return result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+
+
+def cron_unwire(openclaw_cli: str, cron_id: str, timeout_seconds: int = 30
+                ) -> tuple[bool, str]:
+    """Remove failure-alert from a cron."""
+    try:
+        result = subprocess.run(
+            [os.path.expanduser(openclaw_cli), "cron", "edit", cron_id,
+             "--no-failure-alert"],
+            capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return False, f"(exec error: {e})"
+    return result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+
+
 def last_run_for(cron_id: str, runs_dir: str) -> dict[str, Any] | None:
     """Return the most recent 'finished' record from cron/runs/<id>.jsonl, or None."""
     p = Path(os.path.expanduser(runs_dir)) / f"{cron_id}.jsonl"

@@ -37,6 +37,7 @@
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
         </svg>
       </button>
+      <button id="admin-btn" class="btn-link">Admin</button>
       <button id="settings-btn" class="btn-link">Settings</button>
       <button id="refresh-btn" class="btn-link">Refresh</button>
     </div>
@@ -126,6 +127,62 @@
       <span class="grow"></span>
       <button type="button" id="pred-cancel-btn">Cancel</button>
       <button type="button" id="pred-save-btn" class="primary">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="admin-modal" class="admin-modal">
+    <header class="admin-modal-header">
+      <h2>OpenClaw Integration</h2>
+      <span class="grow"></span>
+      <button type="button" id="admin-refresh-btn" class="btn-link">Refresh</button>
+      <button type="button" id="admin-close-btn" class="btn-link">Close</button>
+    </header>
+    <div class="admin-modal-body">
+      <section class="admin-section">
+        <div class="admin-section-header">
+          <h3>OpenClaw Cron Jobs <span class="muted" id="admin-jobs-count">(loading…)</span></h3>
+          <p class="hint">All crons from <code>jobs.json</code> with their failure-alert wiring status. Wire a cron to point its failure webhook at this watchdog.</p>
+        </div>
+        <div class="table-scroll">
+          <table id="admin-jobs-table">
+            <thead>
+              <tr>
+                <th>Cron</th>
+                <th>Agent</th>
+                <th>Schedule</th>
+                <th>Enabled</th>
+                <th>Webhook</th>
+                <th>In Watchdog</th>
+                <th>Predicates</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="admin-jobs-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="admin-section">
+        <div class="admin-section-header">
+          <h3>Orphans <span class="muted" id="admin-orphans-count">(0)</span></h3>
+          <p class="hint">Crons registered in this watchdog's database but not present in <code>jobs.json</code>. Typical causes: the cron was deleted in OpenClaw, or it was renamed/recreated under a different ID.</p>
+        </div>
+        <div class="table-scroll">
+          <table id="admin-orphans-table">
+            <thead>
+              <tr>
+                <th>Cron Name</th>
+                <th>Cron ID</th>
+                <th>First Seen</th>
+                <th>Predicates</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="admin-orphans-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="admin-orphans-empty"></p>
+      </section>
     </div>
   </dialog>
 

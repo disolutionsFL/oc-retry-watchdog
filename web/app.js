@@ -29,6 +29,92 @@ function agentColorIndex(agent) {
   return h % 8;
 }
 
+// ----- Admin modal: OpenClaw Integration -----
+
+async function loadAdminData() {
+  try {
+    return await api("GET", "/api/openclaw-jobs");
+  } catch (e) {
+    toast(`Load OpenClaw jobs failed: ${e.message}`, "bad");
+    return { jobs: [], orphans: [], expected_webhook: "" };
+  }
+}
+
+function renderAdminModal(data) {
+  const jobs = data.jobs || [];
+  const orphans = data.orphans || [];
+  const expected = data.expected_webhook || "";
+
+  $("#admin-jobs-count").textContent = `(${jobs.length} jobs · ${jobs.filter(j => j.webhook_wired_here).length} wired here)`;
+  const tbody = $("#admin-jobs-tbody");
+  tbody.innerHTML = jobs.map(j => {
+    let wireStatus, wireDetail;
+    if (j.webhook_wired_here) {
+      wireStatus = `<span class="wire-status wired" title="Wired to this watchdog">wired</span>`;
+      wireDetail = `<div class="wire-url">→ ${escapeHtml(expected)} (after ${j.webhook_after || 1})</div>`;
+    } else if (j.webhook_wired_elsewhere) {
+      wireStatus = `<span class="wire-status other" title="Webhook points elsewhere — clicking Wire will overwrite">other</span>`;
+      wireDetail = `<div class="wire-url">→ ${escapeHtml(j.webhook_url || "?")}</div>`;
+    } else {
+      wireStatus = `<span class="wire-status unwired" title="No failure-alert webhook configured">unwired</span>`;
+      wireDetail = "";
+    }
+    const inDb = j.in_watchdog_db
+      ? `<span class="in-watchdog-yes" title="Registered in watchdog DB">✓</span>`
+      : `<span class="in-watchdog-no" title="Not yet registered (will auto-register on first failure or when wired)">—</span>`;
+    const predBadge = (j.predicates_count || 0) > 0
+      ? `<span class="badge-pred active" data-action="edit-predicates" data-id="${j.cron_id}" title="Click to edit predicates">${j.predicates_count}</span>`
+      : `<span class="badge-pred" data-action="edit-predicates" data-id="${j.cron_id}" title="Click to add predicates">0</span>`;
+    const wireBtn = j.webhook_wired_here
+      ? `<button class="btn-mini danger" data-action="unwire-cron" data-id="${j.cron_id}">Unwire</button>`
+      : `<button class="btn-mini" data-action="wire-cron" data-id="${j.cron_id}">Wire</button>`;
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(j.name || j.cron_id)}</strong>
+          <br><small><code>${escapeHtml(j.cron_id || "")}</code></small>
+        </td>
+        <td>${j.agent ? `<span class="agent-chip c${agentColorIndex(j.agent)}">${escapeHtml(j.agent)}</span>` : "—"}</td>
+        <td><code>${escapeHtml(j.schedule || "?")}</code></td>
+        <td style="text-align:center;">${j.enabled ? "✓" : "—"}</td>
+        <td>${wireStatus}${wireDetail}</td>
+        <td style="text-align:center;">${inDb}</td>
+        <td style="text-align:center;">${predBadge}</td>
+        <td>${wireBtn}</td>
+      </tr>
+    `;
+  }).join("") || `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px;">No jobs found in jobs.json. Is the path in <code>heartbeat.jobs_json_path</code> correct?</td></tr>`;
+
+  // Orphans
+  $("#admin-orphans-count").textContent = `(${orphans.length})`;
+  const obody = $("#admin-orphans-tbody");
+  const oempty = $("#admin-orphans-empty");
+  if (orphans.length === 0) {
+    obody.innerHTML = "";
+    oempty.textContent = "No orphans — every cron in this watchdog is also in OpenClaw.";
+  } else {
+    oempty.textContent = "";
+    obody.innerHTML = orphans.map(o => `
+      <tr class="row-orphan">
+        <td><strong>${escapeHtml(o.name || "(unknown)")}</strong></td>
+        <td><code>${escapeHtml(o.cron_id)}</code></td>
+        <td><small>${fmtDate(o.first_seen_at)}</small></td>
+        <td style="text-align:center;">${o.predicates_count || 0}</td>
+        <td>
+          <button class="btn-mini danger" data-action="delete-orphan" data-id="${o.cron_id}">Remove</button>
+        </td>
+      </tr>
+    `).join("");
+  }
+}
+
+async function openAdminModal() {
+  const data = await loadAdminData();
+  renderAdminModal(data);
+  $("#admin-modal").showModal();
+}
+
+
 // ----- predicate editor schema -----
 // Per-type editable fields. Each field: {name, label, kind, req?, hint?}
 // kind: "text" | "number" | "json" (json values parsed/serialized on save/load)
@@ -405,6 +491,42 @@ document.addEventListener("click", async (e) => {
     openPredicateEditor(t.dataset.id);
     return;
   }
+  if (t.dataset?.action === "wire-cron") {
+    if (!confirm(`Wire failure-alert webhook on cron ${t.dataset.id} to this watchdog?`)) return;
+    t.disabled = true;
+    try {
+      const r = await api("POST", `/api/openclaw-jobs/${t.dataset.id}/wire`);
+      toast(r.ok ? "Wired" : `Wire failed: ${r.output || "?"}`, r.ok ? "good" : "bad");
+      const data = await loadAdminData();
+      renderAdminModal(data);
+      loadAll();
+    } catch (err) { toast(`Wire failed: ${err.message}`, "bad"); t.disabled = false; }
+    return;
+  }
+  if (t.dataset?.action === "unwire-cron") {
+    if (!confirm(`Remove failure-alert webhook from cron ${t.dataset.id}? Cron stays in OpenClaw + watchdog DB.`)) return;
+    t.disabled = true;
+    try {
+      const r = await api("POST", `/api/openclaw-jobs/${t.dataset.id}/unwire`);
+      toast(r.ok ? "Unwired" : `Unwire failed: ${r.output || "?"}`, r.ok ? "good" : "bad");
+      const data = await loadAdminData();
+      renderAdminModal(data);
+      loadAll();
+    } catch (err) { toast(`Unwire failed: ${err.message}`, "bad"); t.disabled = false; }
+    return;
+  }
+  if (t.dataset?.action === "delete-orphan") {
+    if (!confirm(`Remove cron ${t.dataset.id} from the watchdog DB? This also clears its predicates from config.json. Retry/alert history rows are kept for forensics.`)) return;
+    t.disabled = true;
+    try {
+      const r = await api("DELETE", `/api/crons/${t.dataset.id}`);
+      toast(r.ok ? "Removed orphan" : "Remove failed", r.ok ? "good" : "bad");
+      const data = await loadAdminData();
+      renderAdminModal(data);
+      loadAll();
+    } catch (err) { toast(`Remove failed: ${err.message}`, "bad"); t.disabled = false; }
+    return;
+  }
   if (t.dataset?.action === "retry-now") {
     if (!confirm(`Trigger 'openclaw cron run ${t.dataset.id}'?`)) return;
     try {
@@ -424,6 +546,14 @@ document.addEventListener("click", async (e) => {
 });
 
 $("#refresh-btn").addEventListener("click", loadAll);
+
+// Admin modal
+$("#admin-btn").addEventListener("click", openAdminModal);
+$("#admin-close-btn").addEventListener("click", () => $("#admin-modal").close());
+$("#admin-refresh-btn").addEventListener("click", async () => {
+  const data = await loadAdminData();
+  renderAdminModal(data);
+});
 
 // Agent filter — toggle on click, persist, re-render
 $("#agent-filter-chips").addEventListener("click", (e) => {

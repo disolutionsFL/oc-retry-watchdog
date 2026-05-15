@@ -31,7 +31,7 @@ import alert as alert_mod
 import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
 
-VERSION = "0.2.4"
+VERSION = "0.3.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -206,6 +206,100 @@ class Watchdog:
         cron = self._ensure_cron(cron_id)
         return self._fire_retry(cron, None, None, "manual")
 
+    # ----- OpenClaw integration admin -----
+
+    def _expected_webhook_url(self) -> str:
+        """The webhook URL we'd want each OpenClaw cron to be wired to."""
+        port = int(self.cfg["server"]["port"])
+        return f"http://localhost:{port}/webhook"
+
+    def list_openclaw_jobs(self) -> dict:
+        """Return all OpenClaw jobs annotated with watchdog integration status,
+        plus orphans (crons in our DB but not in OpenClaw)."""
+        jobs_path = self.cfg["heartbeat"]["jobs_json_path"]
+        jobs = oc.read_jobs_with_alerts(jobs_path)
+        expected = self._expected_webhook_url()
+
+        in_db = {r["cron_id"] for r in self.conn.execute("SELECT cron_id FROM crons").fetchall()}
+        in_openclaw = {j["cron_id"] for j in jobs if j.get("cron_id")}
+        cfg_preds = self.cfg.get("predicates", {}) or {}
+
+        for j in jobs:
+            fa = j.get("failure_alert") or {}
+            to_url = fa.get("to")
+            mode = fa.get("mode")
+            j["webhook_url"] = to_url
+            j["webhook_mode"] = mode
+            j["webhook_after"] = fa.get("after")
+            j["webhook_wired_here"] = bool(mode == "webhook" and to_url == expected)
+            j["webhook_wired_elsewhere"] = bool(mode == "webhook" and to_url and to_url != expected)
+            j["in_watchdog_db"] = j["cron_id"] in in_db
+            preds = cfg_preds.get(j["cron_id"])
+            j["predicates_count"] = len(preds) if isinstance(preds, list) else 0
+
+        # Orphans: cron_ids in our DB that no longer exist in jobs.json
+        orphans = []
+        for cid in sorted(in_db - in_openclaw):
+            row = self.conn.execute("SELECT * FROM crons WHERE cron_id=?", (cid,)).fetchone()
+            if not row:
+                continue
+            d = dict(row)
+            preds = cfg_preds.get(cid)
+            d["predicates_count"] = len(preds) if isinstance(preds, list) else 0
+            orphans.append(d)
+
+        return {
+            "jobs": jobs,
+            "orphans": orphans,
+            "expected_webhook": expected,
+        }
+
+    def wire_openclaw_cron(self, cron_id: str) -> tuple[bool, str]:
+        """Run `openclaw cron edit` to set the failure-alert webhook to our URL.
+        Also auto-registers the cron in our DB so it shows in the main list."""
+        ok, output = oc.cron_wire_webhook(
+            self.cfg["openclaw_cli"], cron_id, self._expected_webhook_url(),
+            after=1,
+        )
+        if ok:
+            with self._lock:
+                db_mod.upsert_cron(self.conn, cron_id, {
+                    "default_max_retries": int(self.cfg["retries"].get("default_max", 1)),
+                })
+                # Refresh metadata so name/schedule populate
+                meta, _ = oc.cron_show(self.cfg["openclaw_cli"], cron_id)
+                db_mod.update_cron_meta(self.conn, cron_id,
+                                        meta.get("name"), meta.get("schedule"), meta.get("agent"))
+        return ok, output
+
+    def unwire_openclaw_cron(self, cron_id: str) -> tuple[bool, str]:
+        """Remove the failure-alert webhook from a cron. Watchdog DB row
+        stays (history + predicates intact) — delete separately if desired."""
+        return oc.cron_unwire(self.cfg["openclaw_cli"], cron_id)
+
+    def delete_cron(self, cron_id: str) -> bool:
+        """Remove a cron from the watchdog DB. Used for orphan cleanup.
+        Also strips its predicate config. Retry/alert history rows are kept
+        for forensics (they reference cron_id but have no FK cascade in v1)."""
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM crons WHERE cron_id=?", (cron_id,))
+            removed_crons = cur.rowcount > 0
+            # Strip predicates too
+            if self.cfg_path is not None:
+                try:
+                    on_disk = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+                    preds = on_disk.get("predicates") or {}
+                    if isinstance(preds, dict) and cron_id in preds:
+                        del preds[cron_id]
+                        on_disk["predicates"] = preds
+                        tmp = self.cfg_path.with_suffix(self.cfg_path.suffix + ".tmp")
+                        tmp.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
+                        os.replace(tmp, self.cfg_path)
+                        self.cfg["predicates"] = preds
+                except Exception as e:
+                    sys.stderr.write(f"[delete_cron] config edit failed: {e}\n")
+        return removed_crons
+
     def update_predicates(self, cron_id: str, predicates: list[dict]) -> dict:
         """Replace the predicate list for a cron. Persists to config.json on
         disk and updates the in-memory cfg so subsequent heartbeat scans use
@@ -339,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(data)
@@ -376,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -434,6 +528,8 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM heartbeat_scans ORDER BY id DESC LIMIT 50"
             ).fetchall()
             self._send_json(200, [dict(r) for r in rows])
+        elif path == "/api/openclaw-jobs":
+            self._send_json(200, WATCHDOG.list_openclaw_jobs())
         else:
             self._send_text(404, "Not found")
 
@@ -475,6 +571,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, stats)
             return
 
+        # POST /api/openclaw-jobs/<id>/wire  | /unwire
+        if len(m) >= 5 and m[1] == "api" and m[2] == "openclaw-jobs":
+            cron_id = m[3]
+            action = m[4]
+            if action == "wire":
+                ok, output = WATCHDOG.wire_openclaw_cron(cron_id)
+                self._send_json(200 if ok else 500,
+                                {"ok": ok, "action": "wired" if ok else "wire-failed",
+                                 "output": output[:1000]})
+                return
+            if action == "unwire":
+                ok, output = WATCHDOG.unwire_openclaw_cron(cron_id)
+                self._send_json(200 if ok else 500,
+                                {"ok": ok, "action": "unwired" if ok else "unwire-failed",
+                                 "output": output[:1000]})
+                return
+
+        self._send_text(404, "Not found")
+
+    def do_DELETE(self) -> None:
+        assert WATCHDOG is not None
+        path = urllib.parse.urlparse(self.path).path
+        m = path.split("/")
+        # DELETE /api/crons/<id> — remove from watchdog DB (orphan cleanup)
+        if len(m) == 4 and m[1] == "api" and m[2] == "crons":
+            cron_id = m[3]
+            removed = WATCHDOG.delete_cron(cron_id)
+            self._send_json(200, {"ok": True, "removed": removed})
+            return
         self._send_text(404, "Not found")
 
     def do_PATCH(self) -> None:
