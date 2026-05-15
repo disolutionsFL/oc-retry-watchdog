@@ -113,15 +113,25 @@ def get_model_endpoint(openclaw_config_path: str, model_key: str
 
 def chat_completion(*, base_url: str, model: str, messages: list[dict],
                     api_key: str | None = None, max_tokens: int = 1024,
-                    timeout_seconds: int = 60, temperature: float = 0.2
+                    timeout_seconds: int = 60, temperature: float = 0.0
                     ) -> tuple[bool, str]:
-    """POST to <base_url>/chat/completions. Returns (ok, content_or_error)."""
+    """POST to <base_url>/chat/completions. Returns (ok, content_or_error).
+
+    Includes a vLLM-specific extra_body field `chat_template_kwargs.enable_thinking=false`
+    that tells Qwen3-family chat templates to skip the chain-of-thought prefix
+    entirely. Non-Qwen / non-vLLM endpoints ignore unknown extra body fields.
+    """
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        # vLLM passes this through to the chat-template renderer. Qwen3 chat
+        # templates check for enable_thinking and emit the answer directly
+        # when it's false. Saves latency + avoids the "answer in reasoning
+        # field with content: null" trap.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -160,43 +170,43 @@ def chat_completion(*, base_url: str, model: str, messages: list[dict],
 
 # ----- prompt + parsing -----------------------------------------------------
 
-_SYSTEM = """You are an SRE helping configure side-effect predicates for an OpenClaw cron.
-A predicate runs after every status=ok cron completion. If any predicate fails, the watchdog re-fires the cron and emails the operator. The goal is to detect cases where the cron exits cleanly but its expected side effects (file writes, data mutations, output deliveries, etc.) did NOT happen — agents sometimes claim success in their narrative without actually invoking the tools.
+_SYSTEM = """You are a JSON API for an SRE tool. You receive cron metadata and respond with a JSON array of side-effect predicates. Your ENTIRE response must be a valid JSON array. No prose. No markdown. No code fences. No analysis. No "Here are the predicates". Begin your response with `[` and end with `]`.
 
-Output ONLY a JSON array. No prose, no markdown, no code fences. The array must contain 1-4 predicate objects. Available types:
+WHAT PREDICATES ARE: A predicate runs after every status=ok cron run. If any predicate fails, the watchdog re-fires the cron and emails the operator. They detect cases where the cron exits cleanly but didn't actually do its work — agents sometimes claim success in their narrative without invoking the tools.
 
-1. file_mtime
-   {"type":"file_mtime", "path":"...", "max_age_minutes":N, "min_size_bytes":N (optional), "description":"..."}
-   Asserts the file at `path` was modified within max_age_minutes of NOW.
-   Path supports {TODAY} and {YESTERDAY} placeholders (resolved server-side in the cron's timezone, YYYY-MM-DD).
+PREDICATE TYPES:
 
-2. file_grew
-   {"type":"file_grew", "path":"...", "description":"..."}
-   Asserts the file size strictly increased since the last scan.
+- file_mtime — assert file at `path` was modified within `max_age_minutes` of NOW. Path supports {TODAY} / {YESTERDAY} placeholders.
+  {"type":"file_mtime","path":"...","max_age_minutes":N,"min_size_bytes":N (optional),"description":"..."}
 
-3. json_field_count
-   {"type":"json_field_count", "path":"...", "list_path":"" (optional, dot-path to the list inside the JSON if not at root), "field":"...", "filter": "non_null" | "null" | {"equals":X} | {"in":[X,Y]}, "count_min":N (optional), "count_max":N (optional), "description":"..."}
-   Loads JSON, locates a list, counts items where `field` matches the filter, asserts bounds.
+- file_grew — assert file size strictly increased since last scan.
+  {"type":"file_grew","path":"...","description":"..."}
 
-4. http_health
-   {"type":"http_health", "url":"...", "timeout_seconds":N (optional, default 5), "expected_status":N (optional, default 200), "description":"..."}
-   GETs the URL, expects the status code.
+- json_field_count — load JSON, count list items matching filter, assert bounds.
+  {"type":"json_field_count","path":"...","list_path":"" (optional dot-path inside the JSON),"field":"...","filter":"non_null"|"null"|{"equals":X}|{"in":[X,Y]},"count_min":N (optional),"count_max":N (optional),"description":"..."}
 
-Each `description` is one short sentence describing what business outcome the predicate verifies; this shows up in the operator's alert email if the predicate trips.
+- http_health — GET URL, expect status code.
+  {"type":"http_health","url":"...","timeout_seconds":N (optional, default 5),"expected_status":N (optional, default 200),"description":"..."}
 
-Choose predicates that are SPECIFIC to this cron's actual outputs — not generic. If the cron writes a JSON file, prefer json_field_count over file_mtime alone."""
+Each `description` is one short sentence describing the business outcome the predicate verifies. Choose 1-4 predicates that are SPECIFIC to THIS cron's actual outputs.
+
+EXAMPLE — given a cron that grades yesterday's picks and writes results to a JSON file:
+
+[
+  {"type":"file_mtime","path":"/home/user/data/picks-stored/{YESTERDAY}.json","max_age_minutes":1440,"description":"Yesterday's picks file must have been written within the last 24h"},
+  {"type":"json_field_count","path":"/home/user/data/picks-stored/{YESTERDAY}.json","field":"result","filter":"non_null","count_min":1,"description":"At least one pick must have a non-null result after grading"}
+]
+
+Now respond with predicates for the cron described next. JSON array only."""
 
 
 def build_messages(*, cron_name: str, agent: str, schedule: str,
                    cron_prompt: str, recent_summaries: list[str],
                    existing_predicates: list[dict]) -> list[dict]:
-    # The "/no_think" directive tells Qwen3-family models to skip chain-of-
-    # thought reasoning and emit the final answer directly. Saves latency
-    # and avoids the trap where the JSON ends up in the `reasoning` field
-    # with `content: null`.
-    user = f"""/no_think
-
-Cron name: {cron_name}
+    # chat_template_kwargs.enable_thinking=false (passed in chat_completion)
+    # is the canonical way to disable chain-of-thought on Qwen3 — preferred
+    # over /no_think text markers which not every Qwen3 release honors.
+    user = f"""Cron name: {cron_name}
 Agent: {agent}
 Schedule: {schedule}
 
@@ -205,13 +215,13 @@ Cron prompt:
 {cron_prompt[:4000]}
 \"\"\"
 
-Recent successful run summaries (most recent first):
-{chr(10).join(f"- {s[:300]}" for s in recent_summaries[:5]) or "(none)"}
+Recent successful run summary:
+{chr(10).join(f"- {s[:300]}" for s in recent_summaries[:3]) or "(none)"}
 
 Existing predicates for this cron:
-{json.dumps(existing_predicates, indent=2) if existing_predicates else "(none — fresh suggestions)"}
+{json.dumps(existing_predicates, indent=2) if existing_predicates else "(none)"}
 
-Suggest predicates that would catch a status=ok run where this cron's real side effects did NOT happen. Return ONLY a JSON array."""
+Respond with the JSON array now. Begin with `[`."""
     return [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": user},
