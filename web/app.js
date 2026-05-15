@@ -717,13 +717,19 @@ $("#pred-suggest-btn").addEventListener("click", async () => {
   btn.textContent = "✨ Thinking…";
   try {
     const r = await api("POST", `/api/crons/${predEditorState.cronId}/${kind}/suggest`);
-    if (!r.ok || !Array.isArray(r.predicates) || r.predicates.length === 0) {
+    if (!r.ok || !Array.isArray(r.predicates)) {
       let detail = r.error || "no suggestions returned";
       if (Array.isArray(r.tried) && r.tried.length) {
         const lines = r.tried.map(t => `${t.slot}: ${(t.error || "?").toString().slice(0, 200)}`);
         detail += " — " + lines.join(" | ");
       }
       toast(`AI suggest failed: ${detail}`, "bad");
+      return;
+    }
+    if (r.predicates.length === 0) {
+      // Model returned [] — legit response: it judged this cron has no
+      // dependencies / outputs worth checking automatically.
+      toast(`${r.model_used} returned no suggestions — the model judged this cron has no clear external dependencies worth checking. Add manually if you want them.`, "");
       return;
     }
     predEditorState.predicates = predEditorState.predicates.concat(r.predicates);

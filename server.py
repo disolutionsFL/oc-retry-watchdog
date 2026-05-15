@@ -374,7 +374,12 @@ class Watchdog:
                               "error": content[:300]})
                 continue
             preds, err = ai_mod.parse_predicates(content)
-            if not preds:
+            # parse_predicates returns (None, err) on parse failure and
+            # ([], "") on a valid-but-empty array. Treat empty array as
+            # success — the model legitimately concluded there are no
+            # dependencies worth checking (correct for cleanup crons,
+            # local-only tasks, etc.).
+            if preds is None:
                 tried.append({"slot": slot, "key": key,
                               "tuning": tuning.get("_source", "?"),
                               "budget": budget,
