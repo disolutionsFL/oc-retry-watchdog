@@ -32,7 +32,7 @@ import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
 import ai as ai_mod
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -227,14 +227,15 @@ class Watchdog:
     # ----- AI predicate suggestion -----
 
     def suggest_predicates(self, cron_id: str) -> dict:
-        """Ask the configured AI model to suggest predicates for this cron.
-        Reads the cron's payload from jobs.json + recent run summaries,
-        sends them as a chat prompt, parses the response.
+        return self._suggest_checks(cron_id, kind="predicates")
 
-        Tries primary model first; on failure (transport, parse, or
-        validation) falls back to secondary if configured. Returns:
-          {ok, predicates, model_used, error?}
-        """
+    def suggest_healthchecks(self, cron_id: str) -> dict:
+        return self._suggest_checks(cron_id, kind="healthchecks")
+
+    def _suggest_checks(self, cron_id: str, *, kind: str) -> dict:
+        """Ask the configured AI model to suggest predicates or healthchecks
+        for this cron. `kind` selects the system prompt + which existing
+        list to send as context."""
         s = self._settings()
         if s.get("ai_enabled", "0") not in ("1", "true", "True"):
             raise RuntimeError("AI is not enabled in settings")
@@ -268,7 +269,7 @@ class Watchdog:
         if latest:
             recent.append(latest.get("summary") or "")
 
-        existing_preds = (self.cfg.get("predicates") or {}).get(cron_id) or []
+        existing_preds = (self.cfg.get(kind) or {}).get(cron_id) or []
 
         tuning_overrides = cfg_ai.get("tunings") or {}
 
@@ -306,6 +307,7 @@ class Watchdog:
                 recent_summaries=recent,
                 existing_predicates=existing_preds,
                 tuning=tuning,
+                kind=kind,
             )
             ok, content = ai_mod.chat_completion(
                 base_url=mdef["base_url"],
@@ -426,56 +428,64 @@ class Watchdog:
             if self.cfg_path is not None:
                 try:
                     on_disk = json.loads(self.cfg_path.read_text(encoding="utf-8"))
-                    preds = on_disk.get("predicates") or {}
-                    if isinstance(preds, dict) and cron_id in preds:
-                        del preds[cron_id]
-                        on_disk["predicates"] = preds
+                    dirty = False
+                    for key in ("predicates", "healthchecks"):
+                        section = on_disk.get(key) or {}
+                        if isinstance(section, dict) and cron_id in section:
+                            del section[cron_id]
+                            on_disk[key] = section
+                            self.cfg[key] = section
+                            dirty = True
+                    if dirty:
                         tmp = self.cfg_path.with_suffix(self.cfg_path.suffix + ".tmp")
                         tmp.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
                         os.replace(tmp, self.cfg_path)
-                        self.cfg["predicates"] = preds
                 except Exception as e:
                     sys.stderr.write(f"[delete_cron] config edit failed: {e}\n")
         return removed_crons
 
     def update_predicates(self, cron_id: str, predicates: list[dict]) -> dict:
-        """Replace the predicate list for a cron. Persists to config.json on
-        disk and updates the in-memory cfg so subsequent heartbeat scans use
-        the new rules. Auto-registers the cron in the DB if not already
-        known.
+        return self._update_checks(cron_id, predicates, kind="predicates")
 
-        Pass an empty list to remove all predicates for the cron.
-        Returns the persisted list."""
+    def update_healthchecks(self, cron_id: str, healthchecks: list[dict]) -> dict:
+        return self._update_checks(cron_id, healthchecks, kind="healthchecks")
+
+    def _update_checks(self, cron_id: str, items: list[dict], *, kind: str) -> dict:
+        """Replace the predicate or healthcheck list for a cron. Persists to
+        config.json on disk and updates the in-memory cfg. Auto-registers
+        the cron in the DB if not already known.
+
+        Pass an empty list to remove all entries for the cron.
+        `kind` is "predicates" or "healthchecks" (top-level keys in config).
+        """
         if self.cfg_path is None:
-            raise RuntimeError("no config file in use; predicate edits require a config.json")
+            raise RuntimeError(f"no config file in use; {kind} edits require a config.json")
+        if kind not in ("predicates", "healthchecks"):
+            raise RuntimeError(f"unknown check kind: {kind!r}")
 
-        # Ensure cron is registered (so it shows in /api/crons even before
-        # its first failure)
         with self._lock:
             db_mod.upsert_cron(self.conn, cron_id, {
                 "default_max_retries": int(self.cfg["retries"].get("default_max", 1)),
             })
 
-        # Atomic write: read disk, mutate, write tmp, rename
         with self._lock:
             on_disk = json.loads(self.cfg_path.read_text(encoding="utf-8"))
-            preds = on_disk.get("predicates") or {}
-            if not isinstance(preds, dict):
-                preds = {}
-            if predicates:
-                preds[cron_id] = predicates
-            elif cron_id in preds:
-                del preds[cron_id]
-            on_disk["predicates"] = preds
+            section = on_disk.get(kind) or {}
+            if not isinstance(section, dict):
+                section = {}
+            if items:
+                section[cron_id] = items
+            elif cron_id in section:
+                del section[cron_id]
+            on_disk[kind] = section
 
             tmp = self.cfg_path.with_suffix(self.cfg_path.suffix + ".tmp")
             tmp.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
             os.replace(tmp, self.cfg_path)
 
-            # Mirror in in-memory cfg so the next scan sees the change
-            self.cfg["predicates"] = preds
+            self.cfg[kind] = section
 
-        return predicates
+        return items
 
     def test_alert(self, cron_id: str) -> dict:
         cron = self._ensure_cron(cron_id)
@@ -688,8 +698,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/crons":
             tz = WATCHDOG.cfg["server"]["timezone"]
             crons = db_mod.list_crons_with_counts(WATCHDOG.conn, today_iso_date(tz))
-            # Annotate each cron with predicate count + descriptions
+            # Annotate each cron with predicate + healthcheck counts/descriptions
             cfg_preds = WATCHDOG.cfg.get("predicates", {}) or {}
+            cfg_hcs = WATCHDOG.cfg.get("healthchecks", {}) or {}
             for c in crons:
                 preds = cfg_preds.get(c["cron_id"])
                 if isinstance(preds, list):
@@ -700,6 +711,15 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     c["predicates_count"] = 0
                     c["predicates_descriptions"] = []
+                hcs = cfg_hcs.get(c["cron_id"])
+                if isinstance(hcs, list):
+                    c["healthchecks_count"] = len(hcs)
+                    c["healthchecks_descriptions"] = [
+                        h.get("description", h.get("type", "?")) for h in hcs
+                    ]
+                else:
+                    c["healthchecks_count"] = 0
+                    c["healthchecks_descriptions"] = []
             self._send_json(200, crons)
         elif path.startswith("/api/crons/") and path.endswith("/history"):
             cron_id = path.split("/")[3]
@@ -711,6 +731,10 @@ class Handler(BaseHTTPRequestHandler):
             cron_id = path.split("/")[3]
             preds = (WATCHDOG.cfg.get("predicates") or {}).get(cron_id, [])
             self._send_json(200, preds if isinstance(preds, list) else [])
+        elif path.startswith("/api/crons/") and path.endswith("/healthchecks"):
+            cron_id = path.split("/")[3]
+            hcs = (WATCHDOG.cfg.get("healthchecks") or {}).get(cron_id, [])
+            self._send_json(200, hcs if isinstance(hcs, list) else [])
         elif path == "/api/heartbeat":
             rows = WATCHDOG.conn.execute(
                 "SELECT * FROM heartbeat_scans ORDER BY id DESC LIMIT 50"
@@ -760,11 +784,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # POST /api/crons/<id>/predicates/suggest
+        # POST /api/crons/<id>/healthchecks/suggest
         if (len(m) >= 6 and m[1] == "api" and m[2] == "crons"
-                and m[4] == "predicates" and m[5] == "suggest"):
+                and m[4] in ("predicates", "healthchecks") and m[5] == "suggest"):
             cron_id = m[3]
+            kind = m[4]
             try:
-                result = WATCHDOG.suggest_predicates(cron_id)
+                if kind == "predicates":
+                    result = WATCHDOG.suggest_predicates(cron_id)
+                else:
+                    result = WATCHDOG.suggest_healthchecks(cron_id)
             except RuntimeError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return
@@ -841,21 +870,24 @@ class Handler(BaseHTTPRequestHandler):
 
         m = path.split("/")
         if (len(m) >= 5 and m[1] == "api" and m[2] == "crons"
-                and m[4] == "predicates"):
+                and m[4] in ("predicates", "healthchecks")):
             cron_id = m[3]
+            kind = m[4]
             if not isinstance(body, list):
-                self._send_json(400, {"ok": False, "error": "expected JSON array of predicates"})
+                self._send_json(400, {"ok": False, "error": f"expected JSON array of {kind}"})
                 return
-            # Validate each entry: must be dict with a non-empty 'type'
             for i, p in enumerate(body):
                 if not isinstance(p, dict):
-                    self._send_json(400, {"ok": False, "error": f"predicate[{i}] is not an object"})
+                    self._send_json(400, {"ok": False, "error": f"{kind}[{i}] is not an object"})
                     return
                 if not p.get("type"):
-                    self._send_json(400, {"ok": False, "error": f"predicate[{i}] missing 'type'"})
+                    self._send_json(400, {"ok": False, "error": f"{kind}[{i}] missing 'type'"})
                     return
             try:
-                updated = WATCHDOG.update_predicates(cron_id, body)
+                if kind == "predicates":
+                    updated = WATCHDOG.update_predicates(cron_id, body)
+                else:
+                    updated = WATCHDOG.update_healthchecks(cron_id, body)
             except RuntimeError as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
                 return

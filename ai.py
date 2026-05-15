@@ -429,13 +429,46 @@ EXAMPLE — given a cron that grades yesterday's picks and writes results to a J
 Now respond with predicates for the cron described next. JSON array only."""
 
 
+_SYSTEM_HC = """You are a JSON API for an SRE tool. You receive cron metadata and respond with a JSON array of HEALTHCHECK objects. Your ENTIRE response must be a valid JSON array. No prose. No markdown. No code fences. Begin your response with `[` and end with `]`.
+
+WHAT HEALTHCHECKS ARE: Healthchecks run BEFORE the watchdog retries a failed cron. If any healthcheck fails, the retry is SKIPPED — the watchdog assumes a dependency is down and fires an alert without burning a retry. This prevents retry-loops against an OOM model server, an upstream-API outage, or a network split.
+
+Healthchecks verify the cron's DEPENDENCIES are alive — NOT its outputs (that's predicates' job). Read the cron's prompt and identify upstream services it consumes: model endpoints, third-party APIs, file servers, config files.
+
+CHECK TYPES (same schema as predicates; http_health is usually the right choice):
+
+- http_health (PREFERRED for dependency checks)
+  {"type":"http_health","url":"...","timeout_seconds":N (optional, default 5),"expected_status":N (optional, default 200),"description":"..."}
+
+- file_mtime — useful when the cron depends on a recently-refreshed input file
+  {"type":"file_mtime","path":"...","max_age_minutes":N,"description":"..."}
+
+- json_field_count — rare for healthchecks; usable if a status JSON has expected entries
+  {"type":"json_field_count","path":"...","field":"...","filter":"non_null","count_min":N,"description":"..."}
+
+- file_grew — almost never useful for healthchecks
+
+Pick 1-3 healthchecks that target the LIKELIEST things to be down when this cron fails. Conservative is better than thorough.
+
+EXAMPLE — for a cron that calls a vLLM model and pulls schedule data from ESPN:
+
+[
+  {"type":"http_health","url":"http://localhost:8100/v1/models","timeout_seconds":3,"description":"vLLM endpoint must be responding before we retry this cron"},
+  {"type":"http_health","url":"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard","timeout_seconds":5,"description":"ESPN scoreboard API must be reachable — the cron fetches its game list from here"}
+]
+
+Respond with the JSON array now. Begin with `[`."""
+
+
 def build_messages(*, cron_name: str, agent: str, schedule: str,
                    cron_prompt: str, recent_summaries: list[str],
                    existing_predicates: list[dict],
-                   tuning: dict | None = None) -> list[dict]:
+                   tuning: dict | None = None,
+                   kind: str = "predicates") -> list[dict]:
     # Per-tuning prompt prefix lets families like GLM (which honor /no_think
     # text directives) opt in without affecting families that don't.
     prefix = (tuning or {}).get("system_prompt_prefix", "")
+    label = "healthchecks" if kind == "healthchecks" else "predicates"
     user = f"""{prefix}Cron name: {cron_name}
 Agent: {agent}
 Schedule: {schedule}
@@ -448,12 +481,13 @@ Cron prompt:
 Recent successful run summary:
 {chr(10).join(f"- {s[:300]}" for s in recent_summaries[:3]) or "(none)"}
 
-Existing predicates for this cron:
+Existing {label} for this cron:
 {json.dumps(existing_predicates, indent=2) if existing_predicates else "(none)"}
 
 Respond with the JSON array now. Begin with `[`."""
+    system = _SYSTEM_HC if kind == "healthchecks" else _SYSTEM
     return [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 

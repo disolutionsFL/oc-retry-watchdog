@@ -158,7 +158,9 @@ const PREDICATE_TYPES = {
   },
 };
 
-let predEditorState = { cronId: null, predicates: [] };
+// `kind` is "predicates" or "healthchecks" — same modal, different
+// endpoints + semantics. Set at open time.
+let predEditorState = { cronId: null, predicates: [], kind: "predicates" };
 
 function renderPredicateField(predIdx, field, value) {
   const id = `pred-${predIdx}-${field.name}`;
@@ -248,21 +250,39 @@ function readPredicatesFromForm() {
   return result;
 }
 
-function openPredicateEditor(cronId) {
+// `kind` = "predicates" (default) or "healthchecks". Same modal — title,
+// hint text, and endpoint URLs vary by kind.
+function openChecksEditor(cronId, kind = "predicates") {
   const cron = state.crons.find(c => c.cron_id === cronId);
   if (!cron) {
     toast(`Cron ${cronId} not loaded`, "bad");
     return;
   }
-  predEditorState = { cronId, predicates: [] };
+  predEditorState = { cronId, predicates: [], kind };
 
-  // Fetch current predicates from server (authoritative)
-  api("GET", `/api/crons/${cronId}/predicates`).then(preds => {
-    predEditorState.predicates = Array.isArray(preds) ? JSON.parse(JSON.stringify(preds)) : [];
+  // Title + hint reflect the kind
+  if (kind === "healthchecks") {
+    $("#pred-modal-title").textContent = "Edit healthchecks";
+    $("#pred-modal-hint").innerHTML =
+      "Healthchecks run <strong>before</strong> the watchdog retries a failed cron. " +
+      "If any healthcheck fails, the retry is skipped — the watchdog assumes a dependency is down " +
+      "and alerts directly rather than burning the retry. " +
+      "Changes here write to <code>config.json</code> on the daemon host. " +
+      "<em>Enforcement during retries lands in a follow-up release; for now this manages + AI-suggests the rules.</em>";
+  } else {
+    $("#pred-modal-title").textContent = "Edit predicates";
+    $("#pred-modal-hint").innerHTML =
+      "Predicates run after every <code>status=ok</code> finished run for this cron. " +
+      "If any predicate fails, the watchdog fires the same retry/alert flow as a webhook failure. " +
+      "Changes here write to <code>config.json</code> on the daemon host and take effect immediately. " +
+      "They do not auto-sync to any source repo you may have.";
+  }
+
+  api("GET", `/api/crons/${cronId}/${kind}`).then(items => {
+    predEditorState.predicates = Array.isArray(items) ? JSON.parse(JSON.stringify(items)) : [];
     $("#pred-modal-cron-name").textContent = cron.name || cron.cron_id;
     $("#pred-modal-cron-id").textContent = cron.cron_id;
     renderPredicateModal();
-    // Suggest-with-AI button visible only when AI is enabled + a primary model is set
     const aiBtn = $("#pred-suggest-btn");
     if (state.settings.ai_enabled && state.settings.ai_primary_model) {
       aiBtn.classList.remove("hidden");
@@ -271,8 +291,12 @@ function openPredicateEditor(cronId) {
       aiBtn.classList.add("hidden");
     }
     $("#predicates-modal").showModal();
-  }).catch(e => toast(`Load predicates failed: ${e.message}`, "bad"));
+  }).catch(e => toast(`Load ${kind} failed: ${e.message}`, "bad"));
 }
+
+// Backwards-compatible alias for existing callers
+function openPredicateEditor(cronId) { openChecksEditor(cronId, "predicates"); }
+function openHealthchecksEditor(cronId) { openChecksEditor(cronId, "healthchecks"); }
 
 // ----- agent filter -----
 const AGENT_FILTER_KEY = "oc-retry-watchdog-agent-filter";
@@ -435,6 +459,16 @@ function renderCrons() {
     const predBadge = predCount > 0
       ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}\n\n(Click to edit)" data-action="edit-predicates" data-id="${c.cron_id}">${predCount}</span>`
       : `<span class="badge-pred" title="${escapeAttr(predTitle)}\n\n(Click to add predicates)" data-action="edit-predicates" data-id="${c.cron_id}">0</span>`;
+
+    const hcCount = c.healthchecks_count || 0;
+    const hcDescs = c.healthchecks_descriptions || [];
+    const hcTitle = hcCount > 0
+      ? `${hcCount} healthcheck(s) run before any retry:\n\n` +
+        hcDescs.map((d, i) => `${i + 1}. ${d}`).join("\n\n")
+      : "No healthchecks configured — the watchdog will retry without checking dependencies first. Add http_health rules to skip retries when an upstream service is down.";
+    const hcBadge = hcCount > 0
+      ? `<span class="badge-pred active" title="${escapeAttr(hcTitle)}\n\n(Click to edit)" data-action="edit-healthchecks" data-id="${c.cron_id}">${hcCount}</span>`
+      : `<span class="badge-pred" title="${escapeAttr(hcTitle)}\n\n(Click to add healthchecks)" data-action="edit-healthchecks" data-id="${c.cron_id}">0</span>`;
     const agentCell = c.agent
       ? `<span class="agent-chip c${agentColorIndex(c.agent)}" title="Agent: ${escapeAttr(c.agent)}">${escapeHtml(c.agent)}</span>`
       : `<span class="muted" style="font-size:11px;">&mdash;</span>`;
@@ -443,6 +477,7 @@ function renderCrons() {
       <td data-label="Agent">${agentCell}</td>
       <td data-label="Schedule" class="col-hide-md"><code>${escapeHtml(c.schedule || "?")}</code></td>
       <td data-label="Predicates" class="num">${predBadge}</td>
+      <td data-label="Healthchecks" class="num">${hcBadge}</td>
       <td data-label="Max Retries" class="num col-hide-sm"><input class="inline num" type="number" min="0" max="10" value="${c.max_retries}" data-field="max_retries" data-id="${c.cron_id}"></td>
       <td data-label="Alert Recipient" class="col-hide-lg"><input class="inline" type="text" value="${escapeAttr(c.alert_recipient || "")}" placeholder="(use default)" data-field="alert_recipient" data-id="${c.cron_id}"></td>
       <td data-label="Retries (today / 30d)" class="num">${c.retries_today || 0} / ${c.retries_30d || 0}</td>
@@ -540,6 +575,10 @@ document.addEventListener("click", async (e) => {
   const t = e.target;
   if (t.dataset?.action === "edit-predicates") {
     openPredicateEditor(t.dataset.id);
+    return;
+  }
+  if (t.dataset?.action === "edit-healthchecks") {
+    openHealthchecksEditor(t.dataset.id);
     return;
   }
   if (t.dataset?.action === "wire-cron") {
@@ -673,13 +712,13 @@ $("#agent-filter-chips").addEventListener("click", (e) => {
 
 $("#pred-suggest-btn").addEventListener("click", async () => {
   const btn = $("#pred-suggest-btn");
-  // Snapshot any in-progress form state first so it isn't lost
+  const kind = predEditorState.kind || "predicates";
   try { predEditorState.predicates = readPredicatesFromForm(); } catch {}
   btn.disabled = true;
   const originalText = btn.textContent;
   btn.textContent = "✨ Thinking…";
   try {
-    const r = await api("POST", `/api/crons/${predEditorState.cronId}/predicates/suggest`);
+    const r = await api("POST", `/api/crons/${predEditorState.cronId}/${kind}/suggest`);
     if (!r.ok || !Array.isArray(r.predicates) || r.predicates.length === 0) {
       let detail = r.error || "no suggestions returned";
       if (Array.isArray(r.tried) && r.tried.length) {
@@ -689,10 +728,9 @@ $("#pred-suggest-btn").addEventListener("click", async () => {
       toast(`AI suggest failed: ${detail}`, "bad");
       return;
     }
-    // Append (don't replace) so existing predicates are preserved
     predEditorState.predicates = predEditorState.predicates.concat(r.predicates);
     renderPredicateModal();
-    toast(`Added ${r.predicates.length} suggestion(s) from ${r.model_used} (${r.slot}). Review + edit before saving.`, "good");
+    toast(`Added ${r.predicates.length} ${kind === "healthchecks" ? "healthcheck" : "predicate"} suggestion(s) from ${r.model_used} (${r.slot}). Review + edit before saving.`, "good");
   } catch (e) {
     toast(`AI suggest failed: ${e.message}`, "bad");
   } finally {
@@ -745,13 +783,15 @@ $("#pred-save-btn").addEventListener("click", async () => {
     toast(e.message, "bad");
     return;
   }
+  const kind = predEditorState.kind || "predicates";
   try {
-    await api("PUT", `/api/crons/${predEditorState.cronId}/predicates`, payload);
+    await api("PUT", `/api/crons/${predEditorState.cronId}/${kind}`, payload);
     const cron = state.crons.find(c => c.cron_id === predEditorState.cronId);
     const label = cron && cron.name
       ? `${cron.name} (${predEditorState.cronId})`
       : predEditorState.cronId;
-    toast(`Saved ${payload.length} predicate(s) for ${label}`, "good");
+    const noun = kind === "healthchecks" ? "healthcheck" : "predicate";
+    toast(`Saved ${payload.length} ${noun}(s) for ${label}`, "good");
     $("#predicates-modal").close();
     loadAll();
   } catch (e) {
