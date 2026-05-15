@@ -276,7 +276,8 @@ class Watchdog:
         for slot, key in [("primary", primary), ("fallback", fallback)]:
             if not key:
                 continue
-            mdef = ai_mod.get_model_endpoint(oc_cfg_path, key)
+            mdef = ai_mod.get_model_endpoint(oc_cfg_path, key,
+                                              agent_id=job.get("agent"))
             if not mdef:
                 tried.append({"slot": slot, "key": key, "error": "model not found in openclaw.json"})
                 continue
@@ -290,6 +291,11 @@ class Watchdog:
                               "error": "endpoint unreachable (3s ping failed)"})
                 continue
             tuning = ai_mod.resolve_tuning(key, tuning_overrides)
+            # Bound max_tokens by what the model itself supports (from
+            # openclaw.json), then reserve openclaw's compaction tail.
+            requested = int(tuning.get("max_tokens", max_tokens) or max_tokens)
+            budget = ai_mod.compute_context_budget(mdef, requested)
+            effective_max_tokens = budget["capped_max_tokens"]
             # build_messages may add a tuning-specific prefix (e.g. /no_think
             # for GLM) so we rebuild per attempt
             messages = ai_mod.build_messages(
@@ -307,23 +313,26 @@ class Watchdog:
                 messages=messages,
                 api_key=mdef.get("api_key"),
                 tuning=tuning,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
                 timeout_seconds=timeout,
             )
             if not ok:
                 tried.append({"slot": slot, "key": key,
                               "tuning": tuning.get("_source", "?"),
+                              "budget": budget,
                               "error": content[:300]})
                 continue
             preds, err = ai_mod.parse_predicates(content)
             if not preds:
                 tried.append({"slot": slot, "key": key,
                               "tuning": tuning.get("_source", "?"),
+                              "budget": budget,
                               "error": f"parse: {err}",
                               "raw_first_300": content[:300]})
                 continue
             return {"ok": True, "predicates": preds, "model_used": key,
                     "tuning": tuning.get("_source", "?"),
+                    "budget": budget,
                     "slot": slot, "tried": tried}
         return {"ok": False, "predicates": [], "model_used": None,
                 "error": "all configured models failed", "tried": tried}
@@ -630,15 +639,29 @@ class Handler(BaseHTTPRequestHandler):
                 "daemon_uptime_seconds": int(time.time() - _START_TIME),
             })
         elif path == "/api/ai/models":
-            models = ai_mod.read_openclaw_models(WATCHDOG.cfg["ai"]["openclaw_config_path"])
+            oc_path = WATCHDOG.cfg["ai"]["openclaw_config_path"]
+            models = ai_mod.read_openclaw_models(oc_path)
             # Annotate each with its resolved tuning so the operator can see
             # at a glance which knobs will apply.
             overrides = (WATCHDOG.cfg.get("ai") or {}).get("tunings") or {}
+            ai_default_mt = int((WATCHDOG.cfg.get("ai") or {}).get("max_tokens", 1024))
             for m in models:
                 t = ai_mod.resolve_tuning(m["key"], overrides)
                 m["tuning_name"] = t.get("name", t.get("_source", "?"))
                 m["tuning_source"] = t.get("_source", "?")
                 m["tuning_notes"] = t.get("notes", "")
+                # Pull compaction settings (per-agent override resolved at
+                # call-time inside suggest_predicates; for display we use
+                # the global default).
+                full = ai_mod.get_model_endpoint(oc_path, m["key"])
+                if full:
+                    requested = int(t.get("max_tokens", ai_default_mt) or ai_default_mt)
+                    budget = ai_mod.compute_context_budget(full, requested)
+                    m["context_window"] = full.get("context_window")
+                    m["model_max_tokens"] = full.get("max_tokens")
+                    m["compaction"] = full.get("compaction") or {}
+                    m["effective_max_tokens"] = budget["capped_max_tokens"]
+                    m["input_headroom_tokens"] = budget["input_headroom_tokens"]
             # Parallel-ping all endpoints so the dropdown can mark offline
             # models. Bounded by ~2s wall-clock even if every endpoint is
             # down (parallel timeouts).

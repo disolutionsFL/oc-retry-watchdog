@@ -518,6 +518,12 @@ dialog select {
   color: var(--bad); font-weight: 600;
   margin-bottom: 4px;
 }
+.tuning-info .tuning-budget {
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--muted);
+  letter-spacing: 0.2px;
+}
 
 .ai-models-toolbar {
   display: flex; align-items: center; gap: 12px;

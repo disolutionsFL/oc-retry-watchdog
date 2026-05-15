@@ -202,10 +202,21 @@ def read_openclaw_models(openclaw_config_path: str) -> list[dict[str, Any]]:
     return out
 
 
-def get_model_endpoint(openclaw_config_path: str, model_key: str
+def get_model_endpoint(openclaw_config_path: str, model_key: str,
+                       agent_id: str | None = None
                        ) -> dict[str, Any] | None:
     """Return the full descriptor for a model_key like 'vllm-c3po/qwen3.6-35b',
-    including the apiKey if present. Used at call time."""
+    including the apiKey, the model's contextWindow / maxTokens, and the
+    resolved compaction settings (per-agent override if `agent_id` matches
+    an entry in agents.list, else agents.defaults). Used at call time.
+
+    Resolved compaction fields:
+      mode               'safeguard' | 'aggressive' | ... (operator-defined)
+      reserveTokens      tokens to keep free at the end of the context
+                          (for the model's response + headroom)
+      keepRecentTokens   tokens of recent history kept verbatim by openclaw
+                          (informational — we don't compact ourselves)
+    """
     p = Path(os.path.expanduser(openclaw_config_path))
     if not p.exists():
         return None
@@ -219,17 +230,59 @@ def get_model_endpoint(openclaw_config_path: str, model_key: str
     prov = (((d.get("models") or {}).get("providers")) or {}).get(prov_id)
     if not isinstance(prov, dict):
         return None
+    target = None
     for m in prov.get("models") or []:
         if m.get("id") == mid:
-            return {
-                "provider_id": prov_id,
-                "model_id": mid,
-                "base_url": prov.get("baseUrl"),
-                "api_kind": prov.get("api"),
-                "api_key": prov.get("apiKey"),
-                "max_tokens": m.get("maxTokens"),
-            }
-    return None
+            target = m
+            break
+    if target is None:
+        return None
+
+    # Compaction: agents.defaults.compaction, overridden by the specific
+    # agent's entry in agents.list if present.
+    agents_node = d.get("agents") or {}
+    compaction = dict((agents_node.get("defaults") or {}).get("compaction") or {})
+    if agent_id:
+        for a in agents_node.get("list") or []:
+            if a.get("id") == agent_id and isinstance(a.get("compaction"), dict):
+                compaction.update(a["compaction"])
+                break
+
+    return {
+        "provider_id": prov_id,
+        "model_id": mid,
+        "base_url": prov.get("baseUrl"),
+        "api_kind": prov.get("api"),
+        "api_key": prov.get("apiKey"),
+        "max_tokens": target.get("maxTokens"),
+        "context_window": target.get("contextWindow"),
+        "compaction": compaction,
+    }
+
+
+def compute_context_budget(model_desc: dict, requested_max_tokens: int) -> dict:
+    """Given an openclaw model descriptor + the max_tokens we plan to ask for,
+    compute the effective input-token budget.
+
+      context_window         model's hard ceiling for system+user+output
+      reserve_tokens         what openclaw reserves at the tail of context
+      capped_max_tokens      min(requested_max_tokens, model.maxTokens)
+                              — bounded by what the model actually supports
+      input_headroom_tokens  context_window - reserve_tokens - capped_max_tokens
+                              — approximate budget for system + user message
+                              (informational; we don't truncate to it yet)
+    """
+    cw = int(model_desc.get("context_window") or 0)
+    mmt = int(model_desc.get("max_tokens") or 0) or requested_max_tokens
+    reserve = int((model_desc.get("compaction") or {}).get("reserveTokens") or 0)
+    capped = min(requested_max_tokens, mmt) if mmt else requested_max_tokens
+    headroom = max(cw - reserve - capped, 0) if cw else None
+    return {
+        "context_window": cw or None,
+        "reserve_tokens": reserve or None,
+        "capped_max_tokens": capped,
+        "input_headroom_tokens": headroom,
+    }
 
 
 # ----- OpenAI-compatible chat call -----------------------------------------

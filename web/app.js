@@ -899,11 +899,29 @@ function renderTuningInfo(slot) {
   if (m.online === false) {
     statusLine = `<div class="tuning-offline">&#9888; Endpoint not reachable right now — fallback will be used if available.</div>`;
   }
+  // Context-budget line — imported from openclaw.json:
+  //   context window | model max output | resolved effective output | reserveTokens
+  let budgetLine = "";
+  if (m.context_window) {
+    const ctx = (m.context_window / 1024).toFixed(0) + "K";
+    const reserve = m.compaction && m.compaction.reserveTokens
+      ? `${(m.compaction.reserveTokens / 1024).toFixed(0)}K reserve`
+      : "";
+    const mmt = m.model_max_tokens
+      ? `model max ${(m.model_max_tokens / 1024).toFixed(0)}K out`
+      : "";
+    const eff = m.effective_max_tokens
+      ? `using ${m.effective_max_tokens} out`
+      : "";
+    const parts = [`${ctx} context`, mmt, reserve, eff].filter(Boolean);
+    budgetLine = `<div class="tuning-budget">${escapeHtml(parts.join(" · "))}</div>`;
+  }
   info.innerHTML = `
     ${statusLine}
     Tuning: <span class="tuning-name">${escapeHtml(name)}</span>
     ${m.tuning_source ? `<span class="tuning-src">(${escapeHtml(m.tuning_source)})</span>` : ""}
     ${notes ? `<br><span>${escapeHtml(notes)}</span>` : ""}
+    ${budgetLine}
   `;
 }
 
