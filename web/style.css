@@ -514,6 +514,23 @@ dialog select {
   color: var(--warn); font-weight: 600;
   margin-bottom: 4px;
 }
+.tuning-info .tuning-stale {
+  color: var(--bad); font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.ai-models-toolbar {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px;
+}
+.ai-models-toolbar #ai-models-stamp {
+  font-size: 11px; color: var(--muted);
+}
+
+/* Stale (no-longer-in-openclaw) options in the model dropdown */
+.settings-field select option.opt-stale {
+  color: var(--bad);
+}
 
 /* Feature list: each AI feature is a card with title row + description.
    feat-future is muted to signal "coming soon" without hiding it entirely

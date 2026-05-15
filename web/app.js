@@ -784,26 +784,8 @@ $("#settings-btn").addEventListener("click", async () => {
   // AI section
   $("#setting-ai-enabled").checked = !!state.settings.ai_enabled;
   updateAIConfigVisibility();
-  // Populate model dropdowns from openclaw.json
-  try {
-    const models = await api("GET", "/api/ai/models");
-    state.aiModels = models || [];
-    const opts = `<option value="">— none —</option>` +
-      state.aiModels.map(m => {
-        // Offline status surfaces in the label; null = unknown (skip suffix)
-        let suffix = "";
-        if (m.online === false) suffix = "  — offline";
-        return `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label + suffix)}</option>`;
-      }).join("");
-    $("#setting-ai-primary").innerHTML = opts;
-    $("#setting-ai-primary").value = state.settings.ai_primary_model || "";
-    $("#setting-ai-fallback").innerHTML = opts;
-    $("#setting-ai-fallback").value = state.settings.ai_fallback_model || "";
-    renderTuningInfo("primary");
-    renderTuningInfo("fallback");
-  } catch (e) {
-    toast(`Could not load model list: ${e.message}`, "bad");
-  }
+  await loadAndRenderAIModels({ initialPrimary: state.settings.ai_primary_model || "",
+                                initialFallback: state.settings.ai_fallback_model || "" });
   $("#settings-modal").showModal();
 });
 
@@ -831,6 +813,73 @@ function updateAIConfigVisibility() {
 }
 $("#setting-ai-enabled").addEventListener("change", updateAIConfigVisibility);
 
+// Fetch the latest model list from /api/ai/models and re-populate both
+// dropdowns. Detects stale selections (current value not in the new list)
+// and adds a synthetic "(no longer in openclaw.json)" option so the
+// operator sees the situation rather than the value silently resetting.
+//
+// Opts:
+//   initialPrimary / initialFallback — when re-rendering after a refresh,
+//     pass the current select.value so user mid-edits aren't clobbered.
+async function loadAndRenderAIModels({ initialPrimary, initialFallback } = {}) {
+  const t0 = Date.now();
+  let models;
+  try {
+    models = await api("GET", "/api/ai/models");
+  } catch (e) {
+    toast(`Could not load model list: ${e.message}`, "bad");
+    return;
+  }
+  state.aiModels = models || [];
+  const took = Date.now() - t0;
+  const onlineCount = state.aiModels.filter(m => m.online).length;
+  $("#ai-models-stamp").textContent =
+    `${state.aiModels.length} models · ${onlineCount} online · refreshed ${took}ms ago`;
+
+  const baseOpts = state.aiModels.map(m => {
+    let suffix = "";
+    if (m.online === false) suffix = "  — offline";
+    return `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label + suffix)}</option>`;
+  });
+
+  // Build the option HTML for a slot, prepending a synthetic stale option
+  // if `currentValue` isn't in the fresh model list.
+  function buildOpts(currentValue) {
+    let html = `<option value="">— none —</option>`;
+    if (currentValue && !state.aiModels.some(m => m.key === currentValue)) {
+      html += `<option value="${escapeAttr(currentValue)}" class="opt-stale">${escapeHtml(currentValue)} — no longer in openclaw.json</option>`;
+    }
+    html += baseOpts.join("");
+    return html;
+  }
+
+  function renderSlot(slot, fallbackInitial) {
+    const sel = $(`#setting-ai-${slot}`);
+    // Prefer the currently-displayed value (user may have changed it mid-edit)
+    // over the initial value passed in.
+    const current = sel.value || fallbackInitial || "";
+    sel.innerHTML = buildOpts(current);
+    sel.value = current;
+    renderTuningInfo(slot);
+  }
+  renderSlot("primary", initialPrimary);
+  renderSlot("fallback", initialFallback);
+}
+
+$("#ai-refresh-models").addEventListener("click", async () => {
+  const btn = $("#ai-refresh-models");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "↻ Refreshing…";
+  try {
+    await loadAndRenderAIModels();
+    toast("Model list refreshed", "good");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+});
+
 // Render the tuning info line beneath a model dropdown for the currently
 // selected model. Empty when no model is selected.
 function renderTuningInfo(slot) {
@@ -839,7 +888,11 @@ function renderTuningInfo(slot) {
   const key = sel.value;
   if (!key || !state.aiModels) { info.innerHTML = ""; return; }
   const m = state.aiModels.find(x => x.key === key);
-  if (!m) { info.innerHTML = ""; return; }
+  if (!m) {
+    // Selection exists but isn't in the current model list — stale config
+    info.innerHTML = `<div class="tuning-stale">&#9888; <strong>${escapeHtml(key)}</strong> is no longer in openclaw.json. Pick another model or update openclaw config and refresh.</div>`;
+    return;
+  }
   const name = m.tuning_name || "default";
   const notes = (m.tuning_notes || "").trim();
   let statusLine = "";
