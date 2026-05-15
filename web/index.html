@@ -111,6 +111,24 @@
     </form>
   </dialog>
 
+  <dialog id="predicates-modal" class="predicates-modal">
+    <header class="pred-modal-header">
+      <h2>Edit predicates: <span id="pred-modal-cron-name"></span></h2>
+      <small class="pred-modal-cronid" id="pred-modal-cron-id"></small>
+    </header>
+    <p class="pred-modal-hint">
+      Predicates run after every <code>status=ok</code> finished run for this cron. If any predicate fails, the watchdog fires the same retry/alert flow as a webhook failure.
+      Changes here write to <code>config.json</code> on the daemon host and take effect immediately. They do not auto-sync to any source repo you may have.
+    </p>
+    <div id="pred-modal-list"></div>
+    <div class="pred-modal-actions-bottom">
+      <button type="button" id="pred-add-btn" class="btn-link">+ Add predicate</button>
+      <span class="grow"></span>
+      <button type="button" id="pred-cancel-btn">Cancel</button>
+      <button type="button" id="pred-save-btn" class="primary">Save</button>
+    </div>
+  </dialog>
+
   <dialog id="toast"></dialog>
 
   <script src="/web/app.js"></script>

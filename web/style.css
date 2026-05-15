@@ -241,6 +241,83 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
 .agent-filter-chip.active.c7 { background: var(--agent-7-bg); color: var(--agent-7-fg); border-color: transparent; }
 .agent-filter-chip:not(.active) { text-decoration: line-through; opacity: 0.55; }
 
+/* ----- predicate editor modal ----- */
+.predicates-modal {
+  width: min(90vw, 720px); max-height: 85vh;
+  padding: 0;
+  display: flex; flex-direction: column;
+}
+.predicates-modal[open] { display: flex; }
+.pred-modal-header { padding: 16px 20px 4px 20px; }
+.pred-modal-header h2 { margin: 0 0 2px 0; font-size: 16px; }
+.pred-modal-cronid { color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.pred-modal-hint {
+  margin: 0; padding: 8px 20px 12px;
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+}
+#pred-modal-list {
+  padding: 0 20px; overflow-y: auto; flex: 1 1 auto;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.pred-card {
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); padding: 10px 12px;
+}
+.pred-card-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px;
+}
+.pred-card select.pred-type {
+  font-size: 12px; padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-surface); color: var(--fg);
+}
+.pred-card .grow { flex: 1; }
+.pred-card .pred-remove {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 16px; padding: 0 4px;
+  line-height: 1;
+}
+.pred-card .pred-remove:hover { color: var(--bad); }
+.pred-card label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted);
+  margin: 4px 0;
+}
+.pred-card label .lbl { width: 140px; flex-shrink: 0; }
+.pred-card label .lbl.req::after { content: " *"; color: var(--bad); }
+.pred-card label input[type=text],
+.pred-card label input[type=number] {
+  flex: 1; min-width: 0;
+  padding: 4px 6px; font-size: 12px;
+  color: var(--fg); background: var(--bg-surface);
+  border: 1px solid var(--border); border-radius: 3px;
+}
+.pred-card label input:focus { outline: none; border-color: var(--accent); }
+.pred-card .pred-hint {
+  font-size: 10px; color: var(--muted); margin-top: 2px; padding-left: 148px;
+}
+.pred-modal-actions-bottom {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 20px 16px;
+  border-top: 1px solid var(--border);
+}
+.pred-modal-actions-bottom .grow { flex: 1; }
+.pred-modal-actions-bottom button {
+  padding: 6px 14px; border-radius: 3px; cursor: pointer;
+  font-size: 13px; background: var(--bg-surface); color: var(--fg);
+  border: 1px solid var(--border);
+}
+.pred-modal-actions-bottom button:hover { border-color: var(--accent); color: var(--accent); }
+.pred-modal-actions-bottom button.primary {
+  background: var(--accent); color: white; border-color: var(--accent);
+}
+.pred-modal-actions-bottom button.primary:hover { color: white; opacity: 0.9; }
+
+/* The predicate badge is now clickable */
+.badge-pred { transition: box-shadow 0.1s; }
+.badge-pred:active { box-shadow: 0 0 0 2px var(--accent); }
+
 /* ----- responsive ----- */
 
 /* Wrap the cron table so any unavoidable overflow stays inside the

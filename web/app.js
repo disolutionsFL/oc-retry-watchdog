@@ -29,6 +29,157 @@ function agentColorIndex(agent) {
   return h % 8;
 }
 
+// ----- predicate editor schema -----
+// Per-type editable fields. Each field: {name, label, kind, req?, hint?}
+// kind: "text" | "number" | "json" (json values parsed/serialized on save/load)
+const PREDICATE_TYPES = {
+  file_mtime: {
+    label: "File mtime",
+    fields: [
+      { name: "path", label: "Path", kind: "text", req: true, hint: "Path to file. Supports {TODAY} and {YESTERDAY} placeholders (resolved in server.timezone)." },
+      { name: "max_age_minutes", label: "Max age (minutes)", kind: "number", req: true, hint: "Predicate fails if the file's mtime is older than this many minutes." },
+      { name: "min_size_bytes", label: "Min size (bytes)", kind: "number", hint: "Optional. If set, file size below this fails the predicate." },
+      { name: "description", label: "Description", kind: "text", req: true, hint: "Shown in tooltips and the alert email body." },
+    ],
+  },
+  file_grew: {
+    label: "File grew",
+    fields: [
+      { name: "path", label: "Path", kind: "text", req: true, hint: "File must have grown (size increased) since the previous scan. State persisted in predicate_history table." },
+      { name: "description", label: "Description", kind: "text", req: true },
+    ],
+  },
+  json_field_count: {
+    label: "JSON field count",
+    fields: [
+      { name: "path", label: "Path", kind: "text", req: true, hint: "Path to JSON file. Supports {TODAY}/{YESTERDAY} placeholders." },
+      { name: "list_path", label: "List path", kind: "text", hint: "Empty if the file's root is a list. Dot-path for nested (e.g. \"picks\")." },
+      { name: "field", label: "Field", kind: "text", req: true, hint: "Field name to inspect on each list item." },
+      { name: "filter", label: "Filter", kind: "json", req: true, hint: "non_null | null | {\"equals\":X} | {\"in\":[X,Y]}. JSON, no quotes for keywords." },
+      { name: "count_min", label: "Count min", kind: "number", hint: "Inclusive lower bound on matching entries." },
+      { name: "count_max", label: "Count max", kind: "number", hint: "Inclusive upper bound on matching entries." },
+      { name: "description", label: "Description", kind: "text", req: true },
+    ],
+  },
+  http_health: {
+    label: "HTTP health",
+    fields: [
+      { name: "url", label: "URL", kind: "text", req: true, hint: "Full URL to GET." },
+      { name: "timeout_seconds", label: "Timeout (seconds)", kind: "number", hint: "Default 5." },
+      { name: "expected_status", label: "Expected status", kind: "number", hint: "Default 200." },
+      { name: "description", label: "Description", kind: "text", req: true },
+    ],
+  },
+};
+
+let predEditorState = { cronId: null, predicates: [] };
+
+function renderPredicateField(predIdx, field, value) {
+  const id = `pred-${predIdx}-${field.name}`;
+  let inputHtml = "";
+  if (field.kind === "number") {
+    const v = (value === null || value === undefined) ? "" : value;
+    inputHtml = `<input type="number" id="${id}" data-field="${field.name}" value="${escapeAttr(String(v))}" step="any">`;
+  } else if (field.kind === "json") {
+    let stringified;
+    if (typeof value === "string") stringified = value;
+    else if (value === null || value === undefined) stringified = "";
+    else stringified = JSON.stringify(value);
+    inputHtml = `<input type="text" id="${id}" data-field="${field.name}" data-kind="json" value="${escapeAttr(stringified)}">`;
+  } else {
+    inputHtml = `<input type="text" id="${id}" data-field="${field.name}" value="${escapeAttr(value == null ? "" : String(value))}">`;
+  }
+  const cls = field.req ? "lbl req" : "lbl";
+  return `
+    <label>
+      <span class="${cls}">${escapeHtml(field.label)}</span>
+      ${inputHtml}
+    </label>
+    ${field.hint ? `<div class="pred-hint">${escapeHtml(field.hint)}</div>` : ""}
+  `;
+}
+
+function renderPredicateCard(idx, pred) {
+  const type = pred.type || "file_mtime";
+  const schema = PREDICATE_TYPES[type] || PREDICATE_TYPES.file_mtime;
+  const fieldsHtml = schema.fields.map(f => renderPredicateField(idx, f, pred[f.name])).join("");
+  const typeOptions = Object.entries(PREDICATE_TYPES)
+    .map(([k, v]) => `<option value="${k}" ${k === type ? "selected" : ""}>${escapeHtml(v.label)}</option>`).join("");
+  return `
+    <div class="pred-card" data-idx="${idx}">
+      <div class="pred-card-row">
+        <strong>#${idx + 1}</strong>
+        <select class="pred-type" data-idx="${idx}">${typeOptions}</select>
+        <span class="grow"></span>
+        <button type="button" class="pred-remove" data-idx="${idx}" title="Remove this predicate">&times;</button>
+      </div>
+      ${fieldsHtml}
+    </div>
+  `;
+}
+
+function renderPredicateModal() {
+  const list = $("#pred-modal-list");
+  list.innerHTML = predEditorState.predicates.map((p, i) => renderPredicateCard(i, p)).join("")
+    || `<p class="hint">No predicates yet. Click + Add predicate below to start.</p>`;
+}
+
+function readPredicatesFromForm() {
+  const cards = $$("#pred-modal-list .pred-card");
+  const result = [];
+  for (const card of cards) {
+    const idx = parseInt(card.dataset.idx, 10);
+    const type = card.querySelector(".pred-type").value;
+    const schema = PREDICATE_TYPES[type] || PREDICATE_TYPES.file_mtime;
+    const pred = { type };
+    for (const f of schema.fields) {
+      const input = card.querySelector(`input[data-field="${f.name}"]`);
+      if (!input) continue;
+      const raw = input.value;
+      if (raw === "" || raw == null) {
+        if (f.req) throw new Error(`predicate #${idx + 1}: '${f.label}' is required`);
+        continue;  // skip empty optional
+      }
+      if (f.kind === "number") {
+        const n = Number(raw);
+        if (Number.isNaN(n)) throw new Error(`predicate #${idx + 1}: '${f.label}' must be a number`);
+        pred[f.name] = n;
+      } else if (f.kind === "json") {
+        // try parse as JSON; if it fails, treat as a bare string keyword
+        const t = raw.trim();
+        if (t.startsWith("{") || t.startsWith("[") || t.startsWith("\"")) {
+          try { pred[f.name] = JSON.parse(t); }
+          catch (e) { throw new Error(`predicate #${idx + 1}: '${f.label}' is not valid JSON (${e.message})`); }
+        } else {
+          pred[f.name] = t;
+        }
+      } else {
+        pred[f.name] = raw;
+      }
+    }
+    result.push(pred);
+  }
+  return result;
+}
+
+function openPredicateEditor(cronId) {
+  const cron = state.crons.find(c => c.cron_id === cronId);
+  if (!cron) {
+    toast(`Cron ${cronId} not loaded`, "bad");
+    return;
+  }
+  predEditorState = { cronId, predicates: [] };
+
+  // Fetch current predicates from server (authoritative)
+  api("GET", `/api/crons/${cronId}/predicates`).then(preds => {
+    predEditorState.predicates = Array.isArray(preds) ? JSON.parse(JSON.stringify(preds)) : [];
+    $("#pred-modal-cron-name").textContent = cron.name || cron.cron_id;
+    $("#pred-modal-cron-id").textContent = cron.cron_id;
+    renderPredicateModal();
+    $("#predicates-modal").showModal();
+  }).catch(e => toast(`Load predicates failed: ${e.message}`, "bad"));
+}
+
 // ----- agent filter -----
 const AGENT_FILTER_KEY = "oc-retry-watchdog-agent-filter";
 
@@ -145,8 +296,8 @@ function renderCrons() {
         predDescs.map((d, i) => `${i + 1}. ${d}`).join("\n\n")
       : "No predicates configured — only webhook (status=error) failures trigger an alert for this cron. Add per-cron rules to config.json + restart to enable side-effect verification.";
     const predBadge = predCount > 0
-      ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}">${predCount}</span>`
-      : `<span class="badge-pred" title="${escapeAttr(predTitle)}">0</span>`;
+      ? `<span class="badge-pred active" title="${escapeAttr(predTitle)}\n\n(Click to edit)" data-action="edit-predicates" data-id="${c.cron_id}">${predCount}</span>`
+      : `<span class="badge-pred" title="${escapeAttr(predTitle)}\n\n(Click to add predicates)" data-action="edit-predicates" data-id="${c.cron_id}">0</span>`;
     const agentCell = c.agent
       ? `<span class="agent-chip c${agentColorIndex(c.agent)}" title="Agent: ${escapeAttr(c.agent)}">${escapeHtml(c.agent)}</span>`
       : `<span class="muted" style="font-size:11px;">&mdash;</span>`;
@@ -250,6 +401,10 @@ document.addEventListener("change", async (e) => {
 
 document.addEventListener("click", async (e) => {
   const t = e.target;
+  if (t.dataset?.action === "edit-predicates") {
+    openPredicateEditor(t.dataset.id);
+    return;
+  }
   if (t.dataset?.action === "retry-now") {
     if (!confirm(`Trigger 'openclaw cron run ${t.dataset.id}'?`)) return;
     try {
@@ -284,6 +439,62 @@ $("#agent-filter-chips").addEventListener("click", (e) => {
   saveAgentFilter(disabledAgents);
   renderAgentFilter();
   renderCrons();
+});
+
+// ----- Predicate editor modal handlers -----
+
+$("#pred-add-btn").addEventListener("click", () => {
+  // Snapshot in-progress form values into state before re-render
+  try {
+    predEditorState.predicates = readPredicatesFromForm();
+  } catch (e) {
+    // Validation will fire on Save; ignore here to allow adding new rows mid-edit
+  }
+  predEditorState.predicates.push({ type: "file_mtime", path: "", max_age_minutes: 60, description: "" });
+  renderPredicateModal();
+});
+
+$("#pred-modal-list").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.classList.contains("pred-remove")) {
+    const idx = parseInt(t.dataset.idx, 10);
+    try { predEditorState.predicates = readPredicatesFromForm(); } catch {}
+    predEditorState.predicates.splice(idx, 1);
+    renderPredicateModal();
+  }
+});
+
+$("#pred-modal-list").addEventListener("change", (e) => {
+  if (e.target.classList.contains("pred-type")) {
+    const idx = parseInt(e.target.dataset.idx, 10);
+    try { predEditorState.predicates = readPredicatesFromForm(); } catch {}
+    // Reset to new type with empty fields (preserve description if any)
+    const oldDesc = predEditorState.predicates[idx]?.description || "";
+    predEditorState.predicates[idx] = { type: e.target.value, description: oldDesc };
+    renderPredicateModal();
+  }
+});
+
+$("#pred-cancel-btn").addEventListener("click", () => {
+  $("#predicates-modal").close();
+});
+
+$("#pred-save-btn").addEventListener("click", async () => {
+  let payload;
+  try {
+    payload = readPredicatesFromForm();
+  } catch (e) {
+    toast(e.message, "bad");
+    return;
+  }
+  try {
+    await api("PUT", `/api/crons/${predEditorState.cronId}/predicates`, payload);
+    toast(`Saved ${payload.length} predicate(s) for ${predEditorState.cronId.slice(0, 8)}`, "good");
+    $("#predicates-modal").close();
+    loadAll();
+  } catch (e) {
+    toast(`Save failed: ${e.message}`, "bad");
+  }
 });
 
 $("#agent-filter-reset").addEventListener("click", () => {

@@ -31,7 +31,7 @@ import alert as alert_mod
 import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
 
-VERSION = "0.2.0"
+VERSION = "0.2.4"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -68,7 +68,11 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config(path: str | None) -> dict[str, Any]:
+def load_config(path: str | None) -> tuple[dict[str, Any], Path | None]:
+    """Load config from path / env / default. Returns (cfg, source_path).
+    source_path is the file we actually loaded (or None if no file was found
+    and we fell back to built-in defaults). Callers needing to write the
+    config back (e.g. the predicate editor) use the source_path."""
     if path:
         cfg_path = Path(os.path.expanduser(path))
     elif os.environ.get("RETRY_WATCHDOG_CONFIG"):
@@ -78,11 +82,11 @@ def load_config(path: str | None) -> dict[str, Any]:
 
     if not cfg_path.exists():
         print(f"[config] no config at {cfg_path} — using built-in defaults", file=sys.stderr)
-        return DEFAULT_CONFIG
+        return DEFAULT_CONFIG, None
 
     user = json.loads(cfg_path.read_text(encoding="utf-8"))
     merged = _deep_merge(DEFAULT_CONFIG, user)
-    return merged
+    return merged, cfg_path
 
 
 def _deep_merge(a: dict, b: dict) -> dict:
@@ -119,8 +123,9 @@ def today_iso_date(tz_name: str) -> str:
 class Watchdog:
     """Container for shared state, called by handlers via the module-level singleton."""
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, cfg_path=None):
         self.cfg = cfg
+        self.cfg_path = cfg_path   # Path or None; needed for PUT predicates write-back
         self.conn = db_mod.connect(cfg["db"]["path"])
         db_mod.init_schema(self.conn, settings_defaults_for_db(cfg))
         self._lock = threading.Lock()
@@ -200,6 +205,45 @@ class Watchdog:
     def manual_retry(self, cron_id: str) -> dict:
         cron = self._ensure_cron(cron_id)
         return self._fire_retry(cron, None, None, "manual")
+
+    def update_predicates(self, cron_id: str, predicates: list[dict]) -> dict:
+        """Replace the predicate list for a cron. Persists to config.json on
+        disk and updates the in-memory cfg so subsequent heartbeat scans use
+        the new rules. Auto-registers the cron in the DB if not already
+        known.
+
+        Pass an empty list to remove all predicates for the cron.
+        Returns the persisted list."""
+        if self.cfg_path is None:
+            raise RuntimeError("no config file in use; predicate edits require a config.json")
+
+        # Ensure cron is registered (so it shows in /api/crons even before
+        # its first failure)
+        with self._lock:
+            db_mod.upsert_cron(self.conn, cron_id, {
+                "default_max_retries": int(self.cfg["retries"].get("default_max", 1)),
+            })
+
+        # Atomic write: read disk, mutate, write tmp, rename
+        with self._lock:
+            on_disk = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+            preds = on_disk.get("predicates") or {}
+            if not isinstance(preds, dict):
+                preds = {}
+            if predicates:
+                preds[cron_id] = predicates
+            elif cron_id in preds:
+                del preds[cron_id]
+            on_disk["predicates"] = preds
+
+            tmp = self.cfg_path.with_suffix(self.cfg_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
+            os.replace(tmp, self.cfg_path)
+
+            # Mirror in in-memory cfg so the next scan sees the change
+            self.cfg["predicates"] = preds
+
+        return predicates
 
     def test_alert(self, cron_id: str) -> dict:
         cron = self._ensure_cron(cron_id)
@@ -295,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(data)
@@ -332,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -461,6 +505,36 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_text(404, "Not found")
 
+    def do_PUT(self) -> None:
+        assert WATCHDOG is not None
+        path = urllib.parse.urlparse(self.path).path
+        body = self._read_json()
+
+        m = path.split("/")
+        if (len(m) >= 5 and m[1] == "api" and m[2] == "crons"
+                and m[4] == "predicates"):
+            cron_id = m[3]
+            if not isinstance(body, list):
+                self._send_json(400, {"ok": False, "error": "expected JSON array of predicates"})
+                return
+            # Validate each entry: must be dict with a non-empty 'type'
+            for i, p in enumerate(body):
+                if not isinstance(p, dict):
+                    self._send_json(400, {"ok": False, "error": f"predicate[{i}] is not an object"})
+                    return
+                if not p.get("type"):
+                    self._send_json(400, {"ok": False, "error": f"predicate[{i}] missing 'type'"})
+                    return
+            try:
+                updated = WATCHDOG.update_predicates(cron_id, body)
+            except RuntimeError as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, updated)
+            return
+
+        self._send_text(404, "Not found")
+
 
 # ---------- Background tasks ----------
 
@@ -488,9 +562,9 @@ def main() -> int:
                     help="Initialize DB schema + seed defaults from config, then exit")
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
+    cfg, cfg_path = load_config(args.config)
     global WATCHDOG
-    WATCHDOG = Watchdog(cfg)
+    WATCHDOG = Watchdog(cfg, cfg_path=cfg_path)
 
     if args.init_db:
         print(f"DB initialized at {os.path.expanduser(cfg['db']['path'])}")
