@@ -538,6 +538,145 @@ _REQUIRED_FIELDS = {
 }
 
 
+# ----- failure-mode explanation --------------------------------------------
+
+_SYSTEM_EXPLAIN = """You are a JSON API for an SRE diagnostic tool. You receive details of a failed OpenClaw cron run and respond with a JSON OBJECT (not array) describing the likely root cause.
+
+Your ENTIRE response must be a valid JSON object. No prose. No markdown. No code fences. Begin with `{` and end with `}`.
+
+OUTPUT SCHEMA:
+{
+  "cause": "ONE concise sentence — likely root cause of THIS failure",
+  "next_step": "ONE concise sentence — concrete action the operator should take next",
+  "confidence": "low" | "medium" | "high",
+  "category": "model" | "network" | "config" | "data" | "code" | "dependency" | "unknown"
+}
+
+DIAGNOSTIC SIGNALS:
+- "ModelProviderError" / empty payload / "stopReason=length" / "max_tokens" -> model issue (timeout, OOM, context overflow, reasoning ate output budget)
+- "connection refused" / "no route to host" / DNS errors / "URLError" -> endpoint down or network split
+- HTTP 4xx in error text -> config drift (stale API key, removed endpoint, wrong path) or input validation
+- HTTP 5xx -> upstream service issue
+- Repeated identical failures in retry history -> systemic, not transient — retry won't help
+- First-time failure after long success streak -> recent change (deploy, model swap, config edit)
+- "declined-dependency-down" outcomes in history -> upstream is intermittently flapping
+- Python tracebacks with "KeyError" / "AttributeError" -> upstream schema change or stale data shape
+- "FileNotFoundError" / "No such file" -> a prior step's output is missing — check the producer cron
+
+PRINCIPLES:
+- Be concrete and actionable. "Check the logs" is NOT a useful next_step.
+- If the error mentions a specific file, URL, model, or process, name it in `cause` and/or `next_step`.
+- Set confidence honestly: "high" only when the error text is unambiguous about the cause.
+- If you genuinely cannot tell from the inputs, use category "unknown" and confidence "low".
+
+Now respond with a JSON object for the failure described next."""
+
+
+def build_explain_messages(*, cron_name: str, agent: str, schedule: str,
+                           cron_prompt: str, error: str,
+                           failure_source: str,
+                           retry_history: list[dict],
+                           recent_run_summary: str,
+                           model_id: str | None = None,
+                           model_endpoint: str | None = None,
+                           tuning: dict | None = None) -> list[dict]:
+    """Build messages for explain_failure. Mirrors build_messages but for
+    diagnosis instead of suggestion."""
+    prefix = (tuning or {}).get("system_prompt_prefix", "")
+
+    history_lines = []
+    for h in retry_history[:8]:
+        history_lines.append(
+            f"- {h.get('received_at','?')} outcome={h.get('outcome','?')} "
+            f"source={h.get('failure_source','?')} "
+            f"error={(h.get('error') or '')[:200]!r}"
+        )
+    history_block = "\n".join(history_lines) or "(no prior retry history)"
+
+    model_line = ""
+    if model_id and model_endpoint:
+        model_line = f"This cron's agent is wired to model `{model_id}` at `{model_endpoint}`.\n"
+
+    user = f"""{prefix}Cron name: {cron_name}
+Agent: {agent}
+Schedule: {schedule}
+Failure source: {failure_source}
+{model_line}
+Cron prompt (excerpt):
+\"\"\"
+{(cron_prompt or '')[:2000]}
+\"\"\"
+
+Latest run summary (if available):
+{(recent_run_summary or '(no run summary available)')[:1500]}
+
+Error text from failed run:
+\"\"\"
+{(error or '(no error text)')[:3000]}
+\"\"\"
+
+Recent retry history (newest first):
+{history_block}
+
+Respond with the JSON object now. Begin with `{{`."""
+    return [
+        {"role": "system", "content": _SYSTEM_EXPLAIN},
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_explanation(raw: str) -> tuple[dict | None, str]:
+    """Parse the model's response into {cause, next_step, confidence, category}.
+    Returns (explanation, error). On success error is empty."""
+    s = raw.strip()
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", s, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None, f"no JSON object found in model output (first 200 chars: {raw[:200]!r})"
+    try:
+        obj = json.loads(s[start:end + 1])
+    except json.JSONDecodeError as e:
+        return None, f"JSON parse failed: {e}"
+    if not isinstance(obj, dict):
+        return None, "top-level value is not an object"
+    cause = (obj.get("cause") or "").strip()
+    next_step = (obj.get("next_step") or "").strip()
+    if not cause or not next_step:
+        return None, f"missing required field(s) cause/next_step in: {obj!r}"
+    out = {
+        "cause": cause[:500],
+        "next_step": next_step[:500],
+        "confidence": (obj.get("confidence") or "low").strip().lower(),
+        "category": (obj.get("category") or "unknown").strip().lower(),
+    }
+    if out["confidence"] not in ("low", "medium", "high"):
+        out["confidence"] = "low"
+    return out, ""
+
+
+def explain_failure(*, base_url: str, model: str, messages: list[dict],
+                    api_key: str | None = None,
+                    tuning: dict | None = None,
+                    max_tokens: int = 512,
+                    timeout_seconds: int = 8) -> tuple[dict | None, str]:
+    """High-level: chat-completion + parse. Returns (explanation, error).
+    Short default timeout — this is called inline before sending an alert
+    email, so we cannot block the operator on a slow model."""
+    ok, content = chat_completion(
+        base_url=base_url, model=model, messages=messages,
+        api_key=api_key, tuning=tuning, max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        return None, content
+    return parse_explanation(content)
+
+
+# ----- predicate parsing (existing) ----------------------------------------
+
 def parse_predicates(raw: str) -> tuple[list[dict] | None, str]:
     """Parse the model's response into a validated predicate list.
     Returns (predicates, error). On success error is empty."""

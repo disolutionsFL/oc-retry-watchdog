@@ -87,7 +87,7 @@
       <p class="hint hb-hint">The scanner runs every 5 min (configurable). For each predicate-configured cron, the latest <code>status=ok</code> finished run is checked against its predicates. Predicate failures trigger the same retry/alert flow as a webhook failure.</p>
     </section>
 
-    <p class="hint">v0.5.5 — webhook retries, predicate verification, healthcheck enforcement, AI-assisted suggestions, and OpenClaw admin wiring.</p>
+    <p class="hint">v0.6.0 — alert emails now include AI-generated likely-cause diagnoses, with on-demand Explain buttons in cron history for past failures.</p>
   </main>
 
   <dialog id="settings-modal">
@@ -163,13 +163,13 @@
               </div>
               <div class="hint">Observe each cron's retry success rate and suggest a per-cron <code>max_retries</code> value backed by the data.</div>
             </li>
-            <li class="feat-future">
+            <li>
               <div class="feat-title">
                 <span class="feat-icon">&#128190;</span>
                 <strong>Failure-mode explanations</strong>
-                <span class="feat-status feat-coming">planned</span>
+                <span class="feat-status feat-enabled">active</span>
               </div>
-              <div class="hint">When an alert fires, include an AI-generated one-paragraph diagnosis of the likely root cause based on the failure pattern + the cron's prompt.</div>
+              <div class="hint">When an alert fires, the email gets an AI-generated <em>likely cause</em> + <em>next step</em> block built from the error text, recent run log, and retry history. Click the <em>History</em> action on any cron and then <em>Explain</em> on a row to get the same diagnosis on demand for past failures. AI calls are best-effort with a tight timeout — if the model is slow or offline, the email still goes out and the unavailability is noted in the body.</div>
             </li>
           </ul>
         </div>
@@ -258,6 +258,70 @@
         </div>
         <p class="hint" id="admin-orphans-empty"></p>
       </section>
+    </div>
+  </dialog>
+
+  <dialog id="history-modal" class="history-modal">
+    <header class="history-modal-header">
+      <h2>History: <span id="history-modal-cron-name"></span></h2>
+      <small class="history-modal-cronid" id="history-modal-cron-id"></small>
+      <span class="grow"></span>
+      <button type="button" id="history-refresh-btn" class="btn-link">Refresh</button>
+      <button type="button" id="history-close-btn" class="btn-link">Close</button>
+    </header>
+    <p class="history-modal-hint">
+      Past retry attempts and alert dispatches for this cron, newest first.
+      Click <strong>Explain</strong> on any row to ask the AI to diagnose what likely went wrong.
+      Diagnoses are cached so subsequent clicks are instant.
+    </p>
+    <div class="history-modal-body">
+      <section>
+        <h3>Retry events <span class="muted" id="history-retry-count"></span></h3>
+        <div class="history-table-wrap">
+          <table class="history-table" id="history-retry-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Outcome</th>
+                <th>Source</th>
+                <th>Error</th>
+                <th class="actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="history-retry-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+      <section>
+        <h3>Alert events <span class="muted" id="history-alert-count"></span></h3>
+        <div class="history-table-wrap">
+          <table class="history-table" id="history-alert-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Recipient</th>
+                <th>Subject</th>
+                <th>Status</th>
+                <th class="actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="history-alert-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="explain-modal" class="explain-modal">
+    <header class="explain-modal-header">
+      <h2>Failure-mode explanation</h2>
+      <small class="explain-modal-event" id="explain-modal-event"></small>
+      <span class="grow"></span>
+      <button type="button" id="explain-regenerate-btn" class="btn-link hidden">&#8634; Regenerate</button>
+      <button type="button" id="explain-close-btn" class="btn-link">Close</button>
+    </header>
+    <div class="explain-modal-body" id="explain-modal-body">
+      <p class="explain-loading">Asking AI…</p>
     </div>
   </dialog>
 

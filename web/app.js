@@ -309,6 +309,148 @@ function openChecksEditor(cronId, kind = "predicates") {
 function openPredicateEditor(cronId) { openChecksEditor(cronId, "predicates"); }
 function openHealthchecksEditor(cronId) { openChecksEditor(cronId, "healthchecks"); }
 
+// ----- history + explain modals --------------------------------------------
+
+const historyState = { cronId: null, retries: [], alerts: [] };
+const explainState = { cronId: null, kind: null, eventId: null };
+
+async function openHistoryModal(cronId) {
+  const cron = state.crons.find(c => c.cron_id === cronId);
+  if (!cron) { toast(`Cron ${cronId} not loaded`, "bad"); return; }
+  historyState.cronId = cronId;
+  $("#history-modal-cron-name").textContent = cron.name || cron.cron_id;
+  $("#history-modal-cron-id").textContent = cron.cron_id;
+  $("#history-retry-tbody").innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
+  $("#history-alert-tbody").innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
+  $("#history-modal").showModal();
+  await refreshHistoryModal();
+}
+
+async function refreshHistoryModal() {
+  const cronId = historyState.cronId;
+  if (!cronId) return;
+  try {
+    const data = await api("GET", `/api/crons/${cronId}/history`);
+    historyState.retries = data.retry_events || [];
+    historyState.alerts = data.alert_events || [];
+    renderHistoryModal();
+  } catch (e) {
+    $("#history-retry-tbody").innerHTML =
+      `<tr><td colspan="5" class="bad">Load failed: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderHistoryModal() {
+  const retries = historyState.retries;
+  const alerts = historyState.alerts;
+  $("#history-retry-count").textContent = `(${retries.length})`;
+  $("#history-alert-count").textContent = `(${alerts.length})`;
+
+  const aiEnabled = !!(state.settings.ai_enabled && state.settings.ai_primary_model);
+
+  const explainBtn = (kind, evt) => {
+    if (!aiEnabled && !evt.has_explanation) {
+      return `<span class="muted" title="Enable AI in Settings to generate explanations" style="font-size:11px;">AI off</span>`;
+    }
+    const label = evt.has_explanation ? "View" : "Explain";
+    const cached = evt.has_explanation ? "1" : "0";
+    return `<button class="btn-mini${evt.has_explanation ? '' : ' primary'}" data-action="explain-event" data-kind="${kind}" data-event-id="${evt.id}" data-cached="${cached}" title="${evt.has_explanation ? 'View cached AI diagnosis' : 'Ask AI to diagnose this failure'}">${label}</button>`;
+  };
+
+  if (retries.length === 0) {
+    $("#history-retry-tbody").innerHTML = `<tr><td colspan="5" class="muted">No retry events recorded.</td></tr>`;
+  } else {
+    $("#history-retry-tbody").innerHTML = retries.map(r => `
+      <tr class="hist-${(r.outcome || '').replace(/[^a-z-]/g, '')}">
+        <td><small>${fmtDate(r.received_at)}</small></td>
+        <td><code>${escapeHtml(r.outcome || '?')}</code></td>
+        <td><code>${escapeHtml(r.failure_source || '?')}</code></td>
+        <td class="history-error" title="${escapeAttr(r.error || '')}">${escapeHtml((r.error || '').slice(0, 200))}${(r.error || '').length > 200 ? '…' : ''}</td>
+        <td class="actions">${explainBtn('retry', r)}</td>
+      </tr>
+    `).join("");
+  }
+
+  if (alerts.length === 0) {
+    $("#history-alert-tbody").innerHTML = `<tr><td colspan="5" class="muted">No alert events recorded.</td></tr>`;
+  } else {
+    $("#history-alert-tbody").innerHTML = alerts.map(a => `
+      <tr>
+        <td><small>${fmtDate(a.triggered_at)}</small></td>
+        <td><small>${escapeHtml(a.recipient || '?')}</small></td>
+        <td><small>${escapeHtml((a.subject || '').slice(0, 80))}</small></td>
+        <td>${a.success ? '<span class="good">sent</span>' : `<span class="bad" title="${escapeAttr(a.error || '')}">failed</span>`}</td>
+        <td class="actions">${explainBtn('alert', a)}</td>
+      </tr>
+    `).join("");
+  }
+}
+
+async function openExplainModal(cronId, kind, eventId, fromCache) {
+  explainState.cronId = cronId;
+  explainState.kind = kind;
+  explainState.eventId = eventId;
+  $("#explain-modal-event").textContent = `${kind} event #${eventId}`;
+  $("#explain-modal-body").innerHTML = fromCache
+    ? `<p class="explain-loading">Loading cached diagnosis…</p>`
+    : `<p class="explain-loading">Asking AI — this may take a few seconds…</p>`;
+  // Hide regen button until first result lands
+  $("#explain-regenerate-btn").classList.add("hidden");
+  $("#explain-modal").showModal();
+  await fetchAndRenderExplanation(false);
+}
+
+async function fetchAndRenderExplanation(force) {
+  const { cronId, kind, eventId } = explainState;
+  try {
+    const r = await api(
+      "POST",
+      `/api/crons/${cronId}/history/${kind}/${eventId}/explain`,
+      force ? { force: true } : undefined,
+    );
+    renderExplanation(r);
+  } catch (e) {
+    $("#explain-modal-body").innerHTML =
+      `<p class="bad">Request failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderExplanation(r) {
+  // r: {ok, cached, cause, next_step, confidence, category, model_key, error}
+  const regenBtn = $("#explain-regenerate-btn");
+  if (state.settings.ai_enabled && state.settings.ai_primary_model) {
+    regenBtn.classList.remove("hidden");
+  }
+  if (!r.ok) {
+    $("#explain-modal-body").innerHTML = `
+      <div class="explain-unavail">
+        <strong>AI diagnosis unavailable.</strong>
+        <p>${escapeHtml(r.error || '(no error detail)')}</p>
+        <p class="hint">Common causes: AI is disabled in Settings, the primary/fallback model is offline, the model returned malformed JSON, or the request timed out. Use the Regenerate button after fixing the underlying issue.</p>
+      </div>
+    `;
+    return;
+  }
+  const conf = (r.confidence || 'low').toLowerCase();
+  const cat = (r.category || 'unknown').toLowerCase();
+  $("#explain-modal-body").innerHTML = `
+    <div class="explain-section">
+      <h4>Likely cause</h4>
+      <p>${escapeHtml(r.cause || '(none)')}</p>
+    </div>
+    <div class="explain-section">
+      <h4>Suggested next step</h4>
+      <p>${escapeHtml(r.next_step || '(none)')}</p>
+    </div>
+    <div class="explain-meta">
+      <span class="explain-badge explain-conf-${conf}" title="Model's stated confidence in this diagnosis">confidence: ${escapeHtml(conf)}</span>
+      <span class="explain-badge explain-cat-${cat}" title="Failure category">category: ${escapeHtml(cat)}</span>
+      ${r.model_key ? `<span class="explain-badge explain-model" title="Which model produced this diagnosis">via ${escapeHtml(r.model_key)}</span>` : ''}
+      ${r.cached ? `<span class="explain-badge explain-cached" title="Loaded from the explanations cache — no AI call was made">cached</span>` : `<span class="explain-badge explain-fresh">fresh</span>`}
+    </div>
+  `;
+}
+
 // ----- agent filter -----
 const AGENT_FILTER_KEY = "oc-retry-watchdog-agent-filter";
 
@@ -499,6 +641,7 @@ function renderCrons() {
       <td data-label="Actions" class="actions">
         <button data-action="retry-now" data-id="${c.cron_id}">Retry now</button>
         <button data-action="test-alert" data-id="${c.cron_id}">Test alert</button>
+        <button data-action="open-history" data-id="${c.cron_id}" title="View past retry + alert events with optional AI explanations">History</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -690,6 +833,15 @@ document.addEventListener("click", async (e) => {
             r.ok ? "good" : "bad");
       setTimeout(loadAll, 500);
     } catch (err) { toast(`Failed: ${err.message}`, "bad"); }
+  } else if (t.dataset?.action === "open-history") {
+    openHistoryModal(t.dataset.id);
+  } else if (t.dataset?.action === "explain-event") {
+    openExplainModal(
+      historyState.cronId,
+      t.dataset.kind,
+      parseInt(t.dataset.eventId, 10),
+      t.dataset.cached === "1",
+    );
   }
 });
 
@@ -701,6 +853,24 @@ $("#admin-close-btn").addEventListener("click", () => $("#admin-modal").close())
 $("#admin-refresh-btn").addEventListener("click", async () => {
   const data = await loadAdminData();
   renderAdminModal(data);
+});
+
+// History modal
+$("#history-close-btn").addEventListener("click", () => $("#history-modal").close());
+$("#history-refresh-btn").addEventListener("click", refreshHistoryModal);
+
+// Explain modal
+$("#explain-close-btn").addEventListener("click", () => {
+  $("#explain-modal").close();
+  // The cache state may have flipped from no-explanation -> has-explanation
+  // on this round; re-render history if its modal is still open so the
+  // button label updates from "Explain" -> "View".
+  if ($("#history-modal").open) refreshHistoryModal();
+});
+$("#explain-regenerate-btn").addEventListener("click", async () => {
+  $("#explain-modal-body").innerHTML =
+    `<p class="explain-loading">Regenerating — this may take a few seconds…</p>`;
+  await fetchAndRenderExplanation(true);
 });
 
 // Agent filter — toggle on click, persist, re-render

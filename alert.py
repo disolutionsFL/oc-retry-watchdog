@@ -57,10 +57,18 @@ def send_email(
 
 def format_failure_body(*, cron: dict, error: str, failure_source: str,
                         retry_history: list[dict], suggested_cron_run: str,
-                        ui_url: str) -> str:
+                        ui_url: str,
+                        diagnosis: dict | None = None,
+                        diagnosis_unavailable_reason: str | None = None,
+                        run_log_excerpt: str | None = None) -> str:
     """Compose the body of an ultimate-failure email.
 
     Plain text — multiple subscribers' clients render differently. Stay simple.
+
+    Optional sections (in order):
+      - AI diagnosis block (or "AI diagnosis unavailable" note if we tried
+        and failed — caller passes diagnosis_unavailable_reason)
+      - Run log excerpt (tail of the failed run, if available)
     """
     lines = [
         f"OpenClaw cron failed and max retries are exhausted.",
@@ -72,10 +80,38 @@ def format_failure_body(*, cron: dict, error: str, failure_source: str,
         f"Failure src:  {failure_source}",
         f"Max retries:  {cron['max_retries']}",
         "",
+    ]
+
+    # AI diagnosis section appears first so the operator sees the
+    # interpretation before the raw error wall-of-text.
+    if diagnosis:
+        lines += [
+            "AI diagnosis:",
+            f"  Likely cause: {diagnosis.get('cause', '(unknown)')}",
+            f"  Next step:    {diagnosis.get('next_step', '(unknown)')}",
+            f"  Confidence:   {diagnosis.get('confidence', 'low')}"
+            f" ({diagnosis.get('category', 'unknown')})",
+            "",
+        ]
+    elif diagnosis_unavailable_reason:
+        lines += [
+            f"AI diagnosis: unavailable -- {diagnosis_unavailable_reason}",
+            "",
+        ]
+
+    lines += [
         "Error:",
         "  " + (error or "(no error text)").replace("\n", "\n  "),
         "",
     ]
+
+    if run_log_excerpt:
+        lines += [
+            "Run log excerpt (tail):",
+            "  " + run_log_excerpt.replace("\n", "\n  "),
+            "",
+        ]
+
     if retry_history:
         lines.append("Recent retry history:")
         for h in retry_history[:10]:

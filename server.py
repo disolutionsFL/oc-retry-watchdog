@@ -5,6 +5,7 @@ v0.2 — predicate verification (post-success side-effect checks).
 v0.3 — heartbeat / missed-run detection + full UI + OpenClaw admin wiring.
 v0.4 — per-model tuning registry, offline-model detection, context-budget awareness.
 v0.5 — healthcheck framework with pre-retry enforcement + AI-assisted suggestions.
+v0.6 — failure-mode explanations: AI diagnosis on alert emails + on-demand UI button.
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
@@ -35,7 +36,7 @@ import heartbeat as heartbeat_mod
 import ai as ai_mod
 import predicates as predicates_mod
 
-VERSION = "0.5.5"
+VERSION = "0.6.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -615,6 +616,22 @@ class Watchdog:
             f"[OpenClaw Cron Failure] {cron.get('name') or cron['cron_id']} — "
             f"max retries exhausted"
         )
+
+        # Best-effort AI diagnosis. Short timeout so a slow model never
+        # blocks the alert email from getting out. If it fails, we record
+        # the reason in the email body so the operator knows AI was tried
+        # but didn't help — not that the feature was simply off.
+        # Skip on test alerts — diagnosing the sentinel "This is a test
+        # alert" string burns AI tokens for zero signal.
+        run_log_excerpt = self._read_failed_run_excerpt(cron["cron_id"])
+        if failure_source == "test":
+            diagnosis, diag_err, diag_model_key = None, "", None
+        else:
+            diagnosis, diag_err, diag_model_key = self._try_explain_failure(
+                cron=cron, error=error or "", failure_source=failure_source,
+                retry_history=history, run_log_excerpt=run_log_excerpt,
+            )
+
         body = alert_mod.format_failure_body(
             cron=cron,
             error=error or "(no error text)",
@@ -622,6 +639,9 @@ class Watchdog:
             retry_history=history,
             suggested_cron_run=f"{cfg['openclaw_cli']} cron run {cron['cron_id']}",
             ui_url=cfg.get("ui_url", "http://localhost:9095/"),
+            diagnosis=diagnosis,
+            diagnosis_unavailable_reason=diag_err if not diagnosis else None,
+            run_log_excerpt=run_log_excerpt,
         )
 
         ok, err = alert_mod.send_email(
@@ -642,12 +662,208 @@ class Watchdog:
                 None, None, outcome, failure_source, error,
                 notes or f"retries_today={retries_today}",
             )
-        db_mod.insert_alert_event(
+        alert_event_id = db_mod.insert_alert_event(
             self.conn, cron["cron_id"], now_iso(), recipient,
             subject, body, 1 if ok else 0, None if ok else err, notes,
         )
+
+        # Cache the diagnosis attempt against the alert row so the UI can
+        # show it later without re-burning the AI call. We store BOTH
+        # successful and failed attempts -- a recorded failure tells the
+        # operator "AI was tried" vs "AI was never run" when they click
+        # Explain on an old row.
+        if diagnosis or diag_err:
+            db_mod.upsert_explanation(
+                self.conn,
+                event_kind="alert", event_id=alert_event_id,
+                cron_id=cron["cron_id"], created_at=now_iso(),
+                model_key=diag_model_key,
+                cause=(diagnosis or {}).get("cause"),
+                next_step=(diagnosis or {}).get("next_step"),
+                confidence=(diagnosis or {}).get("confidence"),
+                category=(diagnosis or {}).get("category"),
+                error=diag_err if not diagnosis else None,
+            )
+
         return {"ok": ok, "action": "alerted", "recipient": recipient,
-                "error": None if ok else err}
+                "error": None if ok else err,
+                "diagnosis": diagnosis,
+                "diagnosis_error": diag_err if not diagnosis else None}
+
+    # ----- AI failure-mode explanation -----
+
+    def _read_failed_run_excerpt(self, cron_id: str, tail_chars: int = 1500) -> str:
+        """Pull the tail of the most recent finished run for this cron, for
+        inclusion in the alert email + AI diagnosis input. Returns empty
+        string if no run log is available (the file is missing, the run
+        record has no summary, etc.) — this is a best-effort lookup."""
+        try:
+            runs_dir = self.cfg["heartbeat"]["runs_dir_path"]
+            latest = oc.last_run_for(cron_id, runs_dir)
+        except Exception:
+            return ""
+        if not latest:
+            return ""
+        # Prefer "summary" (what the agent wrote at the end); fall back to
+        # truncated raw record. Truncate to tail so token budgets stay sane.
+        text = latest.get("summary") or json.dumps(latest)[:5000]
+        if len(text) > tail_chars:
+            text = "...(truncated)...\n" + text[-tail_chars:]
+        return text
+
+    def _try_explain_failure(self, *, cron: dict, error: str,
+                              failure_source: str, retry_history: list[dict],
+                              run_log_excerpt: str
+                              ) -> tuple[dict | None, str, str | None]:
+        """Best-effort: try primary then fallback AI model, short timeout.
+        Returns (diagnosis_or_None, error_message_or_empty, model_key_or_None).
+
+        On success: (diagnosis, "", model_key).
+        On every form of failure: (None, "<short reason>", None).
+        Safe to call when AI is disabled — returns ("AI disabled in Settings")."""
+        s = self._settings()
+        if s.get("ai_enabled", "0") not in ("1", "true", "True"):
+            return None, "AI disabled in Settings", None
+        primary = s.get("ai_primary_model", "").strip()
+        fallback = s.get("ai_fallback_model", "").strip()
+        if not primary:
+            return None, "no primary AI model configured", None
+
+        cfg_ai = self.cfg.get("ai") or {}
+        oc_cfg_path = cfg_ai.get("openclaw_config_path", "~/.openclaw/openclaw.json")
+        # Tight bound -- this runs inline on the alert path. We never block
+        # the email send for more than ~8s even if both models are slow.
+        explain_timeout = int(cfg_ai.get("explain_timeout_seconds",
+                                          cfg_ai.get("timeout_seconds", 8)))
+        if explain_timeout > 15:
+            explain_timeout = 15
+        explain_max_tokens = int(cfg_ai.get("explain_max_tokens", 512))
+        tuning_overrides = cfg_ai.get("tunings") or {}
+
+        # Pull the cron's payload prompt + its configured model endpoint so
+        # we can mention it in the AI input (helps the model spot wired-to-
+        # the-wrong-endpoint cases).
+        jobs_path = self.cfg["heartbeat"]["jobs_json_path"]
+        raw_jobs = oc.read_jobs_json(jobs_path)
+        raw = next((j for j in raw_jobs if j.get("id") == cron["cron_id"]), None) or {}
+        prompt_text = ((raw.get("payload") or {}).get("message") or "")
+        cron_payload_model = (raw.get("payload") or {}).get("model")
+        cron_model_endpoint = None
+        if cron_payload_model:
+            cron_mdef = ai_mod.get_model_endpoint(oc_cfg_path, cron_payload_model)
+            if cron_mdef:
+                cron_model_endpoint = cron_mdef.get("base_url")
+
+        last_err = ""
+        for slot, key in [("primary", primary), ("fallback", fallback)]:
+            if not key:
+                continue
+            mdef = ai_mod.get_model_endpoint(oc_cfg_path, key)
+            if not mdef:
+                last_err = f"{slot} model not found in openclaw.json"
+                continue
+            # Short ping so we fail fast on dead endpoints
+            if not ai_mod.is_endpoint_reachable(mdef["base_url"],
+                                                 mdef.get("api_key"),
+                                                 timeout_seconds=2):
+                last_err = f"{slot} endpoint unreachable"
+                continue
+            tuning = ai_mod.resolve_tuning(key, tuning_overrides)
+            messages = ai_mod.build_explain_messages(
+                cron_name=cron.get("name") or cron["cron_id"],
+                agent=cron.get("agent") or "?",
+                schedule=cron.get("schedule") or "?",
+                cron_prompt=prompt_text,
+                error=error,
+                failure_source=failure_source,
+                retry_history=retry_history,
+                recent_run_summary=run_log_excerpt,
+                model_id=(cron_payload_model.split("/", 1)[-1]
+                          if cron_payload_model and "/" in cron_payload_model
+                          else cron_payload_model),
+                model_endpoint=cron_model_endpoint,
+                tuning=tuning,
+            )
+            try:
+                diagnosis, err = ai_mod.explain_failure(
+                    base_url=mdef["base_url"],
+                    model=mdef["model_id"],
+                    messages=messages,
+                    api_key=mdef.get("api_key"),
+                    tuning=tuning,
+                    max_tokens=explain_max_tokens,
+                    timeout_seconds=explain_timeout,
+                )
+            except Exception as e:
+                last_err = f"{slot} {type(e).__name__}: {e}"
+                continue
+            if diagnosis is not None:
+                return diagnosis, "", key
+            last_err = f"{slot} parse/call failed: {err[:200]}"
+        return None, last_err or "all configured models failed", None
+
+    def explain_event(self, cron_id: str, event_kind: str,
+                       event_id: int, *, force: bool = False) -> dict:
+        """On-demand failure-mode explanation for a past retry or alert
+        event. Caches in the explanations table so repeat clicks don't
+        re-burn the AI call. Pass force=True to regenerate."""
+        if event_kind not in ("retry", "alert"):
+            raise RuntimeError(f"invalid event_kind: {event_kind!r}")
+
+        if not force:
+            cached = db_mod.get_explanation(self.conn, event_kind, event_id)
+            if cached and (cached.get("cause") or cached.get("error")):
+                return {"ok": bool(cached.get("cause")),
+                        "cached": True,
+                        "cause": cached.get("cause"),
+                        "next_step": cached.get("next_step"),
+                        "confidence": cached.get("confidence"),
+                        "category": cached.get("category"),
+                        "model_key": cached.get("model_key"),
+                        "created_at": cached.get("created_at"),
+                        "error": cached.get("error")}
+
+        # Fetch the underlying event so we have the error text + context
+        if event_kind == "retry":
+            evt = db_mod.get_retry_event(self.conn, event_id)
+        else:
+            evt = db_mod.get_alert_event(self.conn, event_id)
+        if not evt or evt.get("cron_id") != cron_id:
+            raise RuntimeError(f"{event_kind} event {event_id} not found for {cron_id}")
+
+        cron = self._ensure_cron(cron_id)
+        # For alert events we don't have a structured `error` column —
+        # the body has the error text. For retry events we do.
+        error_text = (evt.get("error")
+                       or evt.get("subject", "")
+                       or "(no error text recorded)")
+        failure_source = evt.get("failure_source") or "alert"
+        history = db_mod.recent_retry_events(self.conn, cron_id, limit=10)
+        run_log_excerpt = self._read_failed_run_excerpt(cron_id)
+
+        diagnosis, diag_err, diag_model_key = self._try_explain_failure(
+            cron=cron, error=error_text, failure_source=failure_source,
+            retry_history=history, run_log_excerpt=run_log_excerpt,
+        )
+
+        db_mod.upsert_explanation(
+            self.conn,
+            event_kind=event_kind, event_id=event_id,
+            cron_id=cron_id, created_at=now_iso(),
+            model_key=diag_model_key,
+            cause=(diagnosis or {}).get("cause"),
+            next_step=(diagnosis or {}).get("next_step"),
+            confidence=(diagnosis or {}).get("confidence"),
+            category=(diagnosis or {}).get("category"),
+            error=diag_err if not diagnosis else None,
+        )
+        return {"ok": bool(diagnosis), "cached": False,
+                "cause": (diagnosis or {}).get("cause"),
+                "next_step": (diagnosis or {}).get("next_step"),
+                "confidence": (diagnosis or {}).get("confidence"),
+                "category": (diagnosis or {}).get("category"),
+                "model_key": diag_model_key,
+                "error": diag_err if not diagnosis else None}
 
     def _fire_dependency_alert(self, cron: dict, failed_run_id: str | None,
                                original_error: str | None,
@@ -849,9 +1065,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, crons)
         elif path.startswith("/api/crons/") and path.endswith("/history"):
             cron_id = path.split("/")[3]
+            retries = db_mod.recent_retry_events(WATCHDOG.conn, cron_id)
+            alerts = db_mod.recent_alert_events(WATCHDOG.conn, cron_id)
+            # Annotate with cached-explanation availability so the UI can
+            # render the Explain button in its "view cached" state without
+            # an extra round-trip per row.
+            for r in retries:
+                r["has_explanation"] = bool(
+                    db_mod.get_explanation(WATCHDOG.conn, "retry", r["id"])
+                )
+            for a in alerts:
+                a["has_explanation"] = bool(
+                    db_mod.get_explanation(WATCHDOG.conn, "alert", a["id"])
+                )
             self._send_json(200, {
-                "retry_events": db_mod.recent_retry_events(WATCHDOG.conn, cron_id),
-                "alert_events": db_mod.recent_alert_events(WATCHDOG.conn, cron_id),
+                "retry_events": retries,
+                "alert_events": alerts,
             })
         elif path.startswith("/api/crons/") and path.endswith("/predicates"):
             cron_id = path.split("/")[3]
@@ -949,6 +1178,28 @@ class Handler(BaseHTTPRequestHandler):
                     result = WATCHDOG.suggest_predicates(cron_id)
                 else:
                     result = WATCHDOG.suggest_healthchecks(cron_id)
+            except RuntimeError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, result)
+            return
+
+        # POST /api/crons/<cron_id>/history/<kind>/<event_id>/explain
+        # Generate (or fetch cached) AI explanation for a past retry or
+        # alert event. Body may include {"force": true} to regenerate.
+        if (len(m) >= 8 and m[1] == "api" and m[2] == "crons"
+                and m[4] == "history" and m[5] in ("retry", "alert")
+                and m[7] == "explain"):
+            cron_id = m[3]
+            kind = m[5]
+            try:
+                event_id = int(m[6])
+            except ValueError:
+                self._send_json(400, {"ok": False, "error": "event_id must be int"})
+                return
+            force = bool(isinstance(body, dict) and body.get("force"))
+            try:
+                result = WATCHDOG.explain_event(cron_id, kind, event_id, force=force)
             except RuntimeError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return

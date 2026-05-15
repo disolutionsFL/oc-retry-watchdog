@@ -89,6 +89,28 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- AI-generated failure-mode explanations. Keyed by (event_kind, event_id)
+-- so the same diagnosis can attach to either a retry_events row or an
+-- alert_events row. Lets the UI re-show old explanations without paying
+-- the AI call cost twice.
+CREATE TABLE IF NOT EXISTS explanations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_kind TEXT NOT NULL,           -- 'retry' or 'alert'
+    event_id INTEGER NOT NULL,
+    cron_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    model_key TEXT,                     -- which AI model produced this
+    cause TEXT,
+    next_step TEXT,
+    confidence TEXT,
+    category TEXT,
+    error TEXT,                         -- non-empty when AI call failed
+    UNIQUE(event_kind, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_explanations_cron
+    ON explanations(cron_id, created_at);
 """
 
 
@@ -278,3 +300,46 @@ def recent_alert_events(conn: sqlite3.Connection, cron_id: str, limit: int = 10)
         (cron_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_retry_event(conn: sqlite3.Connection, event_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM retry_events WHERE id=?", (event_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_alert_event(conn: sqlite3.Connection, event_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM alert_events WHERE id=?", (event_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_explanation(conn: sqlite3.Connection, event_kind: str,
+                    event_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM explanations WHERE event_kind=? AND event_id=?",
+        (event_kind, event_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_explanation(conn: sqlite3.Connection, *, event_kind: str,
+                       event_id: int, cron_id: str, created_at: str,
+                       model_key: str | None,
+                       cause: str | None, next_step: str | None,
+                       confidence: str | None, category: str | None,
+                       error: str | None) -> int:
+    """Insert or replace an explanation. Using REPLACE on the unique
+    (event_kind, event_id) constraint so re-running explain overwrites
+    a prior failed attempt cleanly."""
+    cur = conn.execute(
+        "INSERT INTO explanations (event_kind, event_id, cron_id, created_at, "
+        "model_key, cause, next_step, confidence, category, error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(event_kind, event_id) DO UPDATE SET "
+        "  cron_id=excluded.cron_id, created_at=excluded.created_at, "
+        "  model_key=excluded.model_key, cause=excluded.cause, "
+        "  next_step=excluded.next_step, confidence=excluded.confidence, "
+        "  category=excluded.category, error=excluded.error",
+        (event_kind, event_id, cron_id, created_at, model_key,
+         cause, next_step, confidence, category, error),
+    )
+    return cur.lastrowid

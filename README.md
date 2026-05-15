@@ -12,7 +12,7 @@ OpenClaw's built-in cron scheduler supports failure alerting via webhook but doe
 
 The watchdog provides all three on top of OpenClaw's existing infrastructure, with a JSON HTTP API, a single-page Web UI, and zero non-stdlib Python dependencies.
 
-> **Current version:** v0.5.5 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5).
+> **Current version:** v0.6.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6).
 
 ## Architecture
 
@@ -196,7 +196,51 @@ And clamps the actual `max_tokens` for the chat call at the model's declared cei
 
 Each predicate / healthcheck card in the editor has a **Test** button that dry-runs the rule against the daemon and shows the result inline (`✓ ok (200)` / `✗ ... HTTP 404`) without saving. Catches placeholder URLs, hallucinated endpoints, wrong paths, and 401-on-root cases immediately — before they silently block retries in production.
 
-### 5. Admin view — OpenClaw integration management (v0.3)
+### 5. Failure-mode explanations — AI diagnosis on alerts + on-demand (v0.6)
+
+When an alert email is about to fire (max retries exhausted, or a dependency-down decline), the watchdog asks the configured AI model for a one-paragraph diagnosis and injects it into the email body before the raw error wall:
+
+```
+AI diagnosis:
+  Likely cause: vLLM endpoint at http://c3po:8100/v1 returned HTTP 504 — the model server is overloaded or out of memory.
+  Next step:    Check `nvidia-smi` on C3PO and restart the vLLM systemd service if VRAM is pinned.
+  Confidence:   medium (model)
+```
+
+The AI input includes the cron's metadata, the error text from the failed run, the tail of the cron's most recent run log, the recent retry history (to spot patterns), and the cron's resolved model endpoint (so the AI can spot wired-to-the-wrong-host cases).
+
+**Best-effort with explicit unavailability.** The diagnosis call has a tight 8-second timeout (configurable, capped at 15s) so a slow or offline model never delays the alert email. If both primary and fallback fail, the email still sends — and the body explicitly says so:
+
+```
+AI diagnosis: unavailable -- primary endpoint unreachable | fallback model not found in openclaw.json
+```
+
+This way the operator can distinguish "AI was tried and failed" (something to investigate) from "AI is simply off" (configuration choice).
+
+**Run-log excerpt.** Whether or not AI succeeded, the tail of the cron's most recent run log is appended to the email so the operator has the raw context they'd otherwise need to SSH in to fetch.
+
+**Cached explanations + on-demand UI.** Every diagnosis is stored in the `explanations` table keyed by `(event_kind, event_id)`. The cron card has a **History** action button that opens a modal listing all past retry and alert events; each row has an **Explain** button:
+
+- First click → fires `POST /api/crons/<id>/history/<kind>/<event_id>/explain`, which calls the AI and caches the result.
+- Subsequent clicks → instant "View" load from the cache (no AI call).
+- A **Regenerate** button in the explanation modal forces a fresh call when needed.
+
+The diagnosis modal renders the cause, next step, a confidence badge (`high` / `medium` / `low`), a category badge (`model` / `network` / `config` / `data` / `code` / `dependency` / `unknown`), the model that produced it, and a `cached` / `fresh` indicator.
+
+**What the model is asked to output.** Strict JSON object schema:
+
+```json
+{
+  "cause":      "ONE concise sentence — likely root cause of THIS failure",
+  "next_step":  "ONE concise sentence — concrete action the operator should take next",
+  "confidence": "low" | "medium" | "high",
+  "category":   "model" | "network" | "config" | "data" | "code" | "dependency" | "unknown"
+}
+```
+
+The system prompt embeds diagnostic signals (e.g. "ModelProviderError / empty payload / stopReason=length → model issue", "repeated identical failures → systemic, not transient") so the model anchors on observable signals rather than generic SRE prose. Parser is strict — malformed responses are treated as a failure and the email gets the "unavailable" note.
+
+### 6. Admin view — OpenClaw integration management (v0.3)
 
 A separate `Admin` modal reads `openclaw.json`'s job list and surfaces:
 
@@ -463,7 +507,9 @@ journalctl --user-unit retry-watchdog.service --since "1 hour ago"
 | `healthchecks` | `{}` | Per-cron pre-retry healthcheck rules — see [Healthchecks](#3-healthchecks--pre-retry-dependency-verification-with-enforcement-v05) |
 | `ai.openclaw_config_path` | `~/.openclaw/openclaw.json` | Where to read provider/model definitions |
 | `ai.max_tokens` | `1024` | Default per-suggest call (capped by the model's `maxTokens`) |
-| `ai.timeout_seconds` | `60` | Per-call wall-clock |
+| `ai.timeout_seconds` | `60` | Per-call wall-clock for predicate/healthcheck suggestions |
+| `ai.explain_timeout_seconds` | `8` | Per-call timeout for inline alert-time diagnoses (capped at 15s) |
+| `ai.explain_max_tokens` | `512` | Token budget for diagnosis responses |
 | `ai.tunings` | `{}` | Per-model overrides; see [tuning registry](#per-model-tuning-registry) |
 
 You can override `config.json`'s location via the `RETRY_WATCHDOG_CONFIG` env var or `--config <path>` flag. Recommended for production: keep the public code in one place and a private `config.json` (with real recipient/sender) somewhere else.
@@ -481,7 +527,8 @@ All endpoints return JSON.
 | PATCH | `/api/crons/<id>` | Update `enabled`, `max_retries`, `alert_recipient` |
 | POST | `/api/crons/<id>/retry-now` | Manually invoke `openclaw cron run <id>` |
 | POST | `/api/crons/<id>/test-alert` | Send a synthetic alert email (verify gog-send path) |
-| GET | `/api/crons/<id>/history` | Last 10 retry + 10 alert events for the cron |
+| GET | `/api/crons/<id>/history` | Last 10 retry + 10 alert events for the cron, each annotated with `has_explanation` |
+| POST | `/api/crons/<id>/history/<kind>/<event_id>/explain` | Generate (or fetch cached) AI diagnosis. `kind` ∈ `retry` \| `alert`. Body `{"force": true}` regenerates. |
 | GET / PUT | `/api/crons/<id>/predicates` | Read or replace this cron's predicate list |
 | GET / PUT | `/api/crons/<id>/healthchecks` | Read or replace this cron's healthcheck list |
 | POST | `/api/crons/<id>/predicates/suggest` | AI-suggest predicates |
