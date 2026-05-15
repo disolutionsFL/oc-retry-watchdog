@@ -234,11 +234,59 @@ def get_model_endpoint(openclaw_config_path: str, model_key: str
 
 # ----- OpenAI-compatible chat call -----------------------------------------
 
+def is_endpoint_reachable(base_url: str, api_key: str | None = None,
+                          timeout_seconds: int = 2) -> bool:
+    """Quick GET <base_url>/models to verify the endpoint is alive.
+    Returns True iff a 2xx response comes back within timeout_seconds.
+    Used to fast-fail offline models so the primary doesn't burn its
+    full chat-completion timeout before falling back to secondary."""
+    url = base_url.rstrip("/") + "/models"
+    req = urllib.request.Request(url, method="GET")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def check_models_availability(models: list[dict], timeout_seconds: int = 2,
+                              max_workers: int = 10) -> dict[str, bool]:
+    """Ping each model's endpoint in parallel. Returns {model_key: online}.
+    All checks share the same timeout, so the total wall-clock cost is
+    bounded by max(timeout_seconds, slowest endpoint)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    if not models:
+        return {}
+    # De-duplicate by base_url so we don't hit the same endpoint multiple
+    # times when it hosts several models
+    by_url: dict[str, list[str]] = {}
+    for m in models:
+        by_url.setdefault(m["base_url"], []).append(m["key"])
+    results: dict[str, bool] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {
+            ex.submit(is_endpoint_reachable, url, None, timeout_seconds): url
+            for url in by_url
+        }
+        for f in as_completed(futures):
+            url = futures[f]
+            ok = False
+            try:
+                ok = f.result()
+            except Exception:
+                ok = False
+            for k in by_url[url]:
+                results[k] = ok
+    return results
+
+
 def chat_completion(*, base_url: str, model: str, messages: list[dict],
                     api_key: str | None = None,
                     tuning: dict | None = None,
                     max_tokens: int | None = None,
-                    timeout_seconds: int = 60,
+                    timeout_seconds: int = 30,
                     temperature: float | None = None,
                     ) -> tuple[bool, str]:
     """POST to <base_url>/chat/completions. Returns (ok, content_or_error).

@@ -280,6 +280,15 @@ class Watchdog:
             if not mdef:
                 tried.append({"slot": slot, "key": key, "error": "model not found in openclaw.json"})
                 continue
+            # Fast pre-check: don't burn the full chat-completion timeout on
+            # a host that's down. If /v1/models doesn't respond within 3s,
+            # skip this model and try the next.
+            if not ai_mod.is_endpoint_reachable(mdef["base_url"],
+                                                mdef.get("api_key"),
+                                                timeout_seconds=3):
+                tried.append({"slot": slot, "key": key,
+                              "error": "endpoint unreachable (3s ping failed)"})
+                continue
             tuning = ai_mod.resolve_tuning(key, tuning_overrides)
             # build_messages may add a tuning-specific prefix (e.g. /no_think
             # for GLM) so we rebuild per attempt
@@ -630,6 +639,18 @@ class Handler(BaseHTTPRequestHandler):
                 m["tuning_name"] = t.get("name", t.get("_source", "?"))
                 m["tuning_source"] = t.get("_source", "?")
                 m["tuning_notes"] = t.get("notes", "")
+            # Parallel-ping all endpoints so the dropdown can mark offline
+            # models. Bounded by ~2s wall-clock even if every endpoint is
+            # down (parallel timeouts).
+            try:
+                avail = ai_mod.check_models_availability(models, timeout_seconds=2)
+                for m in models:
+                    m["online"] = bool(avail.get(m["key"], False))
+            except Exception as e:
+                # Don't break the endpoint over an availability check
+                sys.stderr.write(f"[/api/ai/models] availability check failed: {e}\n")
+                for m in models:
+                    m["online"] = None  # unknown
             self._send_json(200, models)
         elif path == "/api/ai/tunings":
             # Built-in registry + active overrides — useful for operators

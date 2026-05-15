@@ -510,6 +510,10 @@ dialog select {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px; opacity: 0.75;
 }
+.tuning-info .tuning-offline {
+  color: var(--warn); font-weight: 600;
+  margin-bottom: 4px;
+}
 
 /* Feature list: each AI feature is a card with title row + description.
    feat-future is muted to signal "coming soon" without hiding it entirely

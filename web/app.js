@@ -789,8 +789,12 @@ $("#settings-btn").addEventListener("click", async () => {
     const models = await api("GET", "/api/ai/models");
     state.aiModels = models || [];
     const opts = `<option value="">— none —</option>` +
-      state.aiModels.map(m =>
-        `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label)}</option>`).join("");
+      state.aiModels.map(m => {
+        // Offline status surfaces in the label; null = unknown (skip suffix)
+        let suffix = "";
+        if (m.online === false) suffix = "  — offline";
+        return `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label + suffix)}</option>`;
+      }).join("");
     $("#setting-ai-primary").innerHTML = opts;
     $("#setting-ai-primary").value = state.settings.ai_primary_model || "";
     $("#setting-ai-fallback").innerHTML = opts;
@@ -838,7 +842,12 @@ function renderTuningInfo(slot) {
   if (!m) { info.innerHTML = ""; return; }
   const name = m.tuning_name || "default";
   const notes = (m.tuning_notes || "").trim();
+  let statusLine = "";
+  if (m.online === false) {
+    statusLine = `<div class="tuning-offline">&#9888; Endpoint not reachable right now — fallback will be used if available.</div>`;
+  }
   info.innerHTML = `
+    ${statusLine}
     Tuning: <span class="tuning-name">${escapeHtml(name)}</span>
     ${m.tuning_source ? `<span class="tuning-src">(${escapeHtml(m.tuning_source)})</span>` : ""}
     ${notes ? `<br><span>${escapeHtml(notes)}</span>` : ""}
