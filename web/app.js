@@ -681,7 +681,11 @@ $("#pred-suggest-btn").addEventListener("click", async () => {
   try {
     const r = await api("POST", `/api/crons/${predEditorState.cronId}/predicates/suggest`);
     if (!r.ok || !Array.isArray(r.predicates) || r.predicates.length === 0) {
-      const detail = r.error || (r.tried && r.tried[0] && r.tried[0].error) || "no suggestions returned";
+      let detail = r.error || "no suggestions returned";
+      if (Array.isArray(r.tried) && r.tried.length) {
+        const lines = r.tried.map(t => `${t.slot}: ${(t.error || "?").toString().slice(0, 200)}`);
+        detail += " — " + lines.join(" | ");
+      }
       toast(`AI suggest failed: ${detail}`, "bad");
       return;
     }

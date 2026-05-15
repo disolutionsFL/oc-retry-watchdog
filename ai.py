@@ -145,9 +145,16 @@ def chat_completion(*, base_url: str, model: str, messages: list[dict],
     choices = data.get("choices") or []
     if not choices:
         return False, f"no choices in response: {str(data)[:500]}"
-    content = (choices[0].get("message") or {}).get("content")
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    # Qwen3-family "thinking" mode (and similar) sometimes returns the actual
+    # response in `reasoning` with `content: null`. Fall back to reasoning so
+    # the parser can still find JSON in it. The `/no_think` directive in our
+    # user prompt typically prevents this, but not all models honor it.
     if not content:
-        return False, f"empty content in choice 0: {str(choices[0])[:500]}"
+        content = msg.get("reasoning") or ""
+    if not content:
+        return False, f"empty content+reasoning in choice 0: {str(choices[0])[:500]}"
     return True, content
 
 
@@ -183,7 +190,13 @@ Choose predicates that are SPECIFIC to this cron's actual outputs — not generi
 def build_messages(*, cron_name: str, agent: str, schedule: str,
                    cron_prompt: str, recent_summaries: list[str],
                    existing_predicates: list[dict]) -> list[dict]:
-    user = f"""Cron name: {cron_name}
+    # The "/no_think" directive tells Qwen3-family models to skip chain-of-
+    # thought reasoning and emit the final answer directly. Saves latency
+    # and avoids the trap where the JSON ends up in the `reasoning` field
+    # with `content: null`.
+    user = f"""/no_think
+
+Cron name: {cron_name}
 Agent: {agent}
 Schedule: {schedule}
 
