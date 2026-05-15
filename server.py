@@ -33,7 +33,7 @@ import heartbeat as heartbeat_mod
 import ai as ai_mod
 import predicates as predicates_mod
 
-VERSION = "0.5.1"
+VERSION = "0.5.4"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -196,11 +196,23 @@ class Watchdog:
         return row
 
     def _today_retries(self, cron_id: str) -> int:
+        """Count of retries the watchdog has ACTUALLY fired today (outcome='queued').
+
+        Crucially excludes:
+          - declined-dependency-down  (a down dependency isn't the cron's fault;
+                                        the retry was skipped, not consumed)
+          - declined-over-limit       (we didn't retry; we just alerted again)
+          - declined-disabled         (didn't retry)
+          - declined-error            (couldn't retry due to a CLI failure)
+
+        Only outcome='queued' means `openclaw cron run` was actually invoked,
+        which is what should consume budget against max_retries.
+        """
         tz = self.cfg["server"]["timezone"]
         today = today_iso_date(tz)
         row = self.conn.execute(
             "SELECT COUNT(*) AS c FROM retry_events WHERE cron_id=? "
-            "AND received_at >= ? AND received_at < ?",
+            "AND received_at >= ? AND received_at < ? AND outcome = 'queued'",
             (cron_id, today + "T00:00:00", today + "T23:59:59.999999"),
         ).fetchone()
         return int(row["c"] if row else 0)
