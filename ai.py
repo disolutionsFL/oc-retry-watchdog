@@ -485,15 +485,31 @@ def build_messages(*, cron_name: str, agent: str, schedule: str,
                    cron_prompt: str, recent_summaries: list[str],
                    existing_predicates: list[dict],
                    tuning: dict | None = None,
-                   kind: str = "predicates") -> list[dict]:
+                   kind: str = "predicates",
+                   model_endpoint: str | None = None,
+                   model_id: str | None = None) -> list[dict]:
     # Per-tuning prompt prefix lets families like GLM (which honor /no_think
     # text directives) opt in without affecting families that don't.
     prefix = (tuning or {}).get("system_prompt_prefix", "")
     label = "healthchecks" if kind == "healthchecks" else "predicates"
+
+    # Model wiring is invisible inside the cron's text prompt (the cron just
+    # says "respond with X" — the model providing the response is bound via
+    # openclaw config). Surface it explicitly so the AI can suggest
+    # health-checking the model endpoint when relevant.
+    model_line = ""
+    if model_endpoint and model_id and kind == "healthchecks":
+        model_line = (
+            f"\nThis cron's agent is wired to model `{model_id}` served at "
+            f"`{model_endpoint}` — if that endpoint goes down (OOM, restart, "
+            f"network) the cron can't generate its response and will fail. "
+            f"Consider an http_health check against `{model_endpoint}/models`.\n"
+        )
+
     user = f"""{prefix}Cron name: {cron_name}
 Agent: {agent}
 Schedule: {schedule}
-
+{model_line}
 Cron prompt:
 \"\"\"
 {cron_prompt[:4000]}

@@ -348,6 +348,20 @@ class Watchdog:
             effective_max_tokens = budget["capped_max_tokens"]
             # build_messages may add a tuning-specific prefix (e.g. /no_think
             # for GLM) so we rebuild per attempt
+            # The cron's CONFIGURED model (from its jobs.json payload.model)
+            # — not the same as the model we're using to generate the
+            # suggestion. The AI needs to know this so it can suggest
+            # health-checking the right endpoint.
+            cron_payload_model = None
+            cron_model_endpoint = None
+            for raw in raw_jobs:
+                if raw.get("id") == cron_id:
+                    cron_payload_model = (raw.get("payload") or {}).get("model")
+                    break
+            if cron_payload_model:
+                cron_mdef = ai_mod.get_model_endpoint(oc_cfg_path, cron_payload_model)
+                if cron_mdef:
+                    cron_model_endpoint = cron_mdef.get("base_url")
             messages = ai_mod.build_messages(
                 cron_name=job.get("name") or cron_id,
                 agent=job.get("agent") or "?",
@@ -357,6 +371,10 @@ class Watchdog:
                 existing_predicates=existing_preds,
                 tuning=tuning,
                 kind=kind,
+                model_endpoint=cron_model_endpoint,
+                model_id=(cron_payload_model.split("/", 1)[-1]
+                          if cron_payload_model and "/" in cron_payload_model
+                          else cron_payload_model),
             )
             ok, content = ai_mod.chat_completion(
                 base_url=mdef["base_url"],
