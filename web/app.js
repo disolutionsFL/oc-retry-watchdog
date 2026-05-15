@@ -198,12 +198,48 @@ function renderPredicateCard(idx, pred) {
       <div class="pred-card-row">
         <strong>#${idx + 1}</strong>
         <select class="pred-type" data-idx="${idx}">${typeOptions}</select>
+        <button type="button" class="pred-test-btn" data-idx="${idx}" title="Dry-run this check against the daemon — does NOT save">Test</button>
+        <span class="pred-test-result" data-idx="${idx}"></span>
         <span class="grow"></span>
         <button type="button" class="pred-remove" data-idx="${idx}" title="Remove this predicate">&times;</button>
       </div>
       ${fieldsHtml}
     </div>
   `;
+}
+
+// Extract a single card's form fields into a predicate dict. Used by both
+// the multi-card save flow (readPredicatesFromForm) and the per-card Test
+// button. Throws Error on validation failures with a label-prefixed message.
+function readPredicateFromCard(card) {
+  const type = card.querySelector(".pred-type").value;
+  const schema = PREDICATE_TYPES[type] || PREDICATE_TYPES.file_mtime;
+  const pred = { type };
+  for (const f of schema.fields) {
+    const input = card.querySelector(`input[data-field="${f.name}"]`);
+    if (!input) continue;
+    const raw = input.value;
+    if (raw === "" || raw == null) {
+      if (f.req) throw new Error(`'${f.label}' is required`);
+      continue;
+    }
+    if (f.kind === "number") {
+      const n = Number(raw);
+      if (Number.isNaN(n)) throw new Error(`'${f.label}' must be a number`);
+      pred[f.name] = n;
+    } else if (f.kind === "json") {
+      const t = raw.trim();
+      if (t.startsWith("{") || t.startsWith("[") || t.startsWith("\"")) {
+        try { pred[f.name] = JSON.parse(t); }
+        catch (e) { throw new Error(`'${f.label}' is not valid JSON (${e.message})`); }
+      } else {
+        pred[f.name] = t;
+      }
+    } else {
+      pred[f.name] = raw;
+    }
+  }
+  return pred;
 }
 
 function renderPredicateModal() {
@@ -217,35 +253,12 @@ function readPredicatesFromForm() {
   const result = [];
   for (const card of cards) {
     const idx = parseInt(card.dataset.idx, 10);
-    const type = card.querySelector(".pred-type").value;
-    const schema = PREDICATE_TYPES[type] || PREDICATE_TYPES.file_mtime;
-    const pred = { type };
-    for (const f of schema.fields) {
-      const input = card.querySelector(`input[data-field="${f.name}"]`);
-      if (!input) continue;
-      const raw = input.value;
-      if (raw === "" || raw == null) {
-        if (f.req) throw new Error(`predicate #${idx + 1}: '${f.label}' is required`);
-        continue;  // skip empty optional
-      }
-      if (f.kind === "number") {
-        const n = Number(raw);
-        if (Number.isNaN(n)) throw new Error(`predicate #${idx + 1}: '${f.label}' must be a number`);
-        pred[f.name] = n;
-      } else if (f.kind === "json") {
-        // try parse as JSON; if it fails, treat as a bare string keyword
-        const t = raw.trim();
-        if (t.startsWith("{") || t.startsWith("[") || t.startsWith("\"")) {
-          try { pred[f.name] = JSON.parse(t); }
-          catch (e) { throw new Error(`predicate #${idx + 1}: '${f.label}' is not valid JSON (${e.message})`); }
-        } else {
-          pred[f.name] = t;
-        }
-      } else {
-        pred[f.name] = raw;
-      }
+    try {
+      result.push(readPredicateFromCard(card));
+    } catch (e) {
+      // Re-throw with the card index prefixed
+      throw new Error(`predicate #${idx + 1}: ${e.message}`);
     }
-    result.push(pred);
   }
   return result;
 }
@@ -754,13 +767,42 @@ $("#pred-add-btn").addEventListener("click", () => {
   renderPredicateModal();
 });
 
-$("#pred-modal-list").addEventListener("click", (e) => {
+$("#pred-modal-list").addEventListener("click", async (e) => {
   const t = e.target;
   if (t.classList.contains("pred-remove")) {
     const idx = parseInt(t.dataset.idx, 10);
     try { predEditorState.predicates = readPredicatesFromForm(); } catch {}
     predEditorState.predicates.splice(idx, 1);
     renderPredicateModal();
+    return;
+  }
+  if (t.classList.contains("pred-test-btn")) {
+    const card = t.closest(".pred-card");
+    const resultEl = card.querySelector(".pred-test-result");
+    let pred;
+    try {
+      pred = readPredicateFromCard(card);
+    } catch (err) {
+      resultEl.className = "pred-test-result bad";
+      resultEl.textContent = "✗ " + err.message;
+      return;
+    }
+    t.disabled = true;
+    const origText = t.textContent;
+    t.textContent = "…";
+    resultEl.className = "pred-test-result pending";
+    resultEl.textContent = "testing…";
+    try {
+      const r = await api("POST", "/api/check/test", pred);
+      resultEl.className = "pred-test-result " + (r.ok ? "ok" : "bad");
+      resultEl.textContent = (r.ok ? "✓ " : "✗ ") + (r.message || (r.ok ? "passed" : "failed"));
+    } catch (err) {
+      resultEl.className = "pred-test-result bad";
+      resultEl.textContent = "✗ " + err.message;
+    } finally {
+      t.disabled = false;
+      t.textContent = origText;
+    }
   }
 });
 

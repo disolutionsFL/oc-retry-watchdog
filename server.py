@@ -33,7 +33,7 @@ import heartbeat as heartbeat_mod
 import ai as ai_mod
 import predicates as predicates_mod
 
-VERSION = "0.5.4"
+VERSION = "0.5.5"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -905,6 +905,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/heartbeat/scan-now":
             stats = WATCHDOG.scanner.scan_once()
             self._send_json(200, stats)
+            return
+
+        # POST /api/check/test — dry-run a single check (predicate or
+        # healthcheck — same schema). Used by the editor's per-card Test
+        # button to validate a definition before saving.
+        if path == "/api/check/test":
+            if not isinstance(body, dict):
+                self._send_json(400, {"ok": False, "message": "expected JSON object"})
+                return
+            if not body.get("type"):
+                self._send_json(400, {"ok": False, "message": "missing 'type'"})
+                return
+            tz_name = WATCHDOG.cfg["server"]["timezone"]
+            try:
+                # Ephemeral in-memory state for file_grew (which is rarely
+                # used here but supported). State doesn't persist between
+                # test calls — that's fine for a test button.
+                _scratch: dict = {}
+                ok, msg = predicates_mod.evaluate(
+                    body,
+                    tz_name=tz_name,
+                    state_get=lambda k: _scratch.get(k),
+                    state_set=lambda k, v: _scratch.__setitem__(k, v),
+                )
+            except Exception as e:
+                self._send_json(200, {"ok": False,
+                                      "message": f"{type(e).__name__}: {e}"})
+                return
+            self._send_json(200, {"ok": bool(ok), "message": msg})
             return
 
         # POST /api/crons/<id>/predicates/suggest
