@@ -270,14 +270,7 @@ class Watchdog:
 
         existing_preds = (self.cfg.get("predicates") or {}).get(cron_id) or []
 
-        messages = ai_mod.build_messages(
-            cron_name=job.get("name") or cron_id,
-            agent=job.get("agent") or "?",
-            schedule=job.get("schedule") or "?",
-            cron_prompt=prompt_text,
-            recent_summaries=recent,
-            existing_predicates=existing_preds,
-        )
+        tuning_overrides = cfg_ai.get("tunings") or {}
 
         tried: list[dict] = []
         for slot, key in [("primary", primary), ("fallback", fallback)]:
@@ -287,23 +280,41 @@ class Watchdog:
             if not mdef:
                 tried.append({"slot": slot, "key": key, "error": "model not found in openclaw.json"})
                 continue
+            tuning = ai_mod.resolve_tuning(key, tuning_overrides)
+            # build_messages may add a tuning-specific prefix (e.g. /no_think
+            # for GLM) so we rebuild per attempt
+            messages = ai_mod.build_messages(
+                cron_name=job.get("name") or cron_id,
+                agent=job.get("agent") or "?",
+                schedule=job.get("schedule") or "?",
+                cron_prompt=prompt_text,
+                recent_summaries=recent,
+                existing_predicates=existing_preds,
+                tuning=tuning,
+            )
             ok, content = ai_mod.chat_completion(
                 base_url=mdef["base_url"],
                 model=mdef["model_id"],
                 messages=messages,
                 api_key=mdef.get("api_key"),
+                tuning=tuning,
                 max_tokens=max_tokens,
                 timeout_seconds=timeout,
             )
             if not ok:
-                tried.append({"slot": slot, "key": key, "error": content[:300]})
+                tried.append({"slot": slot, "key": key,
+                              "tuning": tuning.get("_source", "?"),
+                              "error": content[:300]})
                 continue
             preds, err = ai_mod.parse_predicates(content)
             if not preds:
-                tried.append({"slot": slot, "key": key, "error": f"parse: {err}",
+                tried.append({"slot": slot, "key": key,
+                              "tuning": tuning.get("_source", "?"),
+                              "error": f"parse: {err}",
                               "raw_first_300": content[:300]})
                 continue
             return {"ok": True, "predicates": preds, "model_used": key,
+                    "tuning": tuning.get("_source", "?"),
                     "slot": slot, "tried": tried}
         return {"ok": False, "predicates": [], "model_used": None,
                 "error": "all configured models failed", "tried": tried}
@@ -611,7 +622,25 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == "/api/ai/models":
             models = ai_mod.read_openclaw_models(WATCHDOG.cfg["ai"]["openclaw_config_path"])
+            # Annotate each with its resolved tuning so the operator can see
+            # at a glance which knobs will apply.
+            overrides = (WATCHDOG.cfg.get("ai") or {}).get("tunings") or {}
+            for m in models:
+                t = ai_mod.resolve_tuning(m["key"], overrides)
+                m["tuning_name"] = t.get("name", t.get("_source", "?"))
+                m["tuning_source"] = t.get("_source", "?")
+                m["tuning_notes"] = t.get("notes", "")
             self._send_json(200, models)
+        elif path == "/api/ai/tunings":
+            # Built-in registry + active overrides — useful for operators
+            # adding new model families or debugging "why didn't it pick the
+            # right knobs?"
+            overrides = (WATCHDOG.cfg.get("ai") or {}).get("tunings") or {}
+            self._send_json(200, {
+                "default": ai_mod.DEFAULT_TUNING,
+                "builtin": ai_mod.BUILTIN_TUNINGS,
+                "overrides": overrides,
+            })
         elif path == "/api/crons":
             tz = WATCHDOG.cfg["server"]["timezone"]
             crons = db_mod.list_crons_with_counts(WATCHDOG.conn, today_iso_date(tz))

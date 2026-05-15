@@ -23,6 +23,129 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+# ----- per-model tuning registry -------------------------------------------
+# Different model families need different knobs to produce clean JSON output.
+# Patterns are matched (case-insensitive) against the model_id portion of
+# `<provider>/<model_id>` keys. First match wins. Operators can override or
+# add families via `ai.tunings` in config.json.
+#
+# Each tuning may contain:
+#   extra_body            — dict merged into the chat-completions request body
+#   temperature           — overrides the default 0.0
+#   max_tokens            — overrides the default 1024
+#   system_prompt_prefix  — text prepended to the user message
+#   notes                 — human-readable description of why this tuning exists
+
+DEFAULT_TUNING = {
+    "name": "default",
+    "notes": "Conservative defaults — works for most chat-completion endpoints.",
+    "extra_body": {},
+    "temperature": 0.0,
+    "max_tokens": 1024,
+}
+
+BUILTIN_TUNINGS = [
+    {
+        "name": "qwen3",
+        "match": r"qwen3(\.\d+)?",         # qwen3, qwen3.5, qwen3.6, ...
+        "notes": ("Qwen3 family in vLLM: pass chat_template_kwargs."
+                  "enable_thinking=false so the chat template skips the "
+                  "chain-of-thought prefix. Without this, the actual JSON "
+                  "answer goes into the reasoning field with content: null."),
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "temperature": 0.0,
+    },
+    {
+        "name": "qwen2",
+        "match": r"qwen2(\.\d+)?",
+        "notes": "Qwen2 / Qwen2.5 family — no thinking mode, standard chat completions.",
+        "extra_body": {},
+        "temperature": 0.1,
+    },
+    {
+        "name": "openai-style",
+        "match": r"(gpt-?oss|gpt-3|gpt-4|gpt-5|o1|o3)",
+        "notes": ("OpenAI / GPT-OSS family: response_format json_object is "
+                  "reliable for forcing JSON-only output."),
+        "extra_body": {"response_format": {"type": "json_object"}},
+        "temperature": 0.0,
+    },
+    {
+        "name": "deepseek",
+        "match": r"deepseek",
+        "notes": ("DeepSeek family — reasoning models. response_format usually "
+                  "works; reasoning may still appear in `reasoning` field "
+                  "which our content-fallback handles."),
+        "extra_body": {"response_format": {"type": "json_object"}},
+        "temperature": 0.0,
+    },
+    {
+        "name": "glm",
+        "match": r"glm",
+        "notes": "GLM family (4.x+) responds well to a /no_think text directive.",
+        "system_prompt_prefix": "/no_think\n\n",
+        "extra_body": {},
+        "temperature": 0.0,
+    },
+    {
+        "name": "gemma",
+        "match": r"gemma",
+        "notes": "Gemma family — no special directives needed in current testing.",
+        "extra_body": {},
+        "temperature": 0.2,
+    },
+    {
+        "name": "mistral",
+        "match": r"mistral|mixtral",
+        "notes": "Mistral / Mixtral family — no special directives.",
+        "extra_body": {},
+        "temperature": 0.2,
+    },
+    {
+        "name": "nemotron",
+        "match": r"nemotron",
+        "notes": "Nvidia Nemotron family — no special directives in current testing.",
+        "extra_body": {},
+        "temperature": 0.1,
+    },
+]
+
+
+def resolve_tuning(model_key: str, overrides: dict | None = None) -> dict:
+    """Resolve the active tuning for a model.
+
+    Resolution order:
+      1. Exact match of full model_key (provider/model_id) in overrides
+      2. Exact match of model_id (after slash) in overrides
+      3. Built-in pattern match against model_id
+      4. DEFAULT_TUNING
+
+    Each lookup result is merged onto DEFAULT_TUNING so partial overrides
+    inherit unspecified fields. The returned dict includes a `_source` key
+    so callers (and the UI) can show which tuning was selected.
+    """
+    overrides = overrides or {}
+    model_id = model_key.split("/", 1)[-1] if "/" in model_key else model_key
+
+    if model_key in overrides and isinstance(overrides[model_key], dict):
+        return {**DEFAULT_TUNING, **overrides[model_key],
+                "_source": f"config-override[{model_key}]"}
+    if model_id in overrides and isinstance(overrides[model_id], dict):
+        return {**DEFAULT_TUNING, **overrides[model_id],
+                "_source": f"config-override[{model_id}]"}
+
+    for t in BUILTIN_TUNINGS:
+        try:
+            if re.search(t["match"], model_id, re.IGNORECASE):
+                merged = {**DEFAULT_TUNING, **t}
+                merged["_source"] = f"builtin[{t['name']}]"
+                return merged
+        except re.error:
+            continue
+
+    return {**DEFAULT_TUNING, "_source": "builtin[default]"}
+
+
 # ----- openclaw.json discovery ---------------------------------------------
 
 def read_openclaw_models(openclaw_config_path: str) -> list[dict[str, Any]]:
@@ -112,27 +235,32 @@ def get_model_endpoint(openclaw_config_path: str, model_key: str
 # ----- OpenAI-compatible chat call -----------------------------------------
 
 def chat_completion(*, base_url: str, model: str, messages: list[dict],
-                    api_key: str | None = None, max_tokens: int = 1024,
-                    timeout_seconds: int = 60, temperature: float = 0.0
+                    api_key: str | None = None,
+                    tuning: dict | None = None,
+                    max_tokens: int | None = None,
+                    timeout_seconds: int = 60,
+                    temperature: float | None = None,
                     ) -> tuple[bool, str]:
     """POST to <base_url>/chat/completions. Returns (ok, content_or_error).
 
-    Includes a vLLM-specific extra_body field `chat_template_kwargs.enable_thinking=false`
-    that tells Qwen3-family chat templates to skip the chain-of-thought prefix
-    entirely. Non-Qwen / non-vLLM endpoints ignore unknown extra body fields.
+    `tuning` (from resolve_tuning) supplies extra_body / temperature /
+    max_tokens defaults. Explicit max_tokens / temperature kwargs override
+    the tuning values. When tuning is None, the absolute defaults apply.
     """
-    url = base_url.rstrip("/") + "/chat/completions"
+    tuning = tuning or DEFAULT_TUNING
     payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        # vLLM passes this through to the chat-template renderer. Qwen3 chat
-        # templates check for enable_thinking and emit the answer directly
-        # when it's false. Saves latency + avoids the "answer in reasoning
-        # field with content: null" trap.
-        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": max_tokens if max_tokens is not None else tuning.get("max_tokens", 1024),
+        "temperature": temperature if temperature is not None else tuning.get("temperature", 0.0),
     }
+    # Merge tuning-defined extra body fields (e.g. chat_template_kwargs,
+    # response_format) into the request payload. Unknown fields are
+    # silently ignored by endpoints that don't recognize them.
+    for k, v in (tuning.get("extra_body") or {}).items():
+        payload[k] = v
+
+    url = base_url.rstrip("/") + "/chat/completions"
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -202,11 +330,12 @@ Now respond with predicates for the cron described next. JSON array only."""
 
 def build_messages(*, cron_name: str, agent: str, schedule: str,
                    cron_prompt: str, recent_summaries: list[str],
-                   existing_predicates: list[dict]) -> list[dict]:
-    # chat_template_kwargs.enable_thinking=false (passed in chat_completion)
-    # is the canonical way to disable chain-of-thought on Qwen3 — preferred
-    # over /no_think text markers which not every Qwen3 release honors.
-    user = f"""Cron name: {cron_name}
+                   existing_predicates: list[dict],
+                   tuning: dict | None = None) -> list[dict]:
+    # Per-tuning prompt prefix lets families like GLM (which honor /no_think
+    # text directives) opt in without affecting families that don't.
+    prefix = (tuning or {}).get("system_prompt_prefix", "")
+    user = f"""{prefix}Cron name: {cron_name}
 Agent: {agent}
 Schedule: {schedule}
 

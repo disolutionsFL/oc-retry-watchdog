@@ -92,7 +92,17 @@
     "_comment": "Optional AI-assisted predicate suggestions. When the operator enables AI in Settings and picks a model, the predicate editor gets a 'Suggest with AI' button that asks the chosen model to propose predicates based on the cron's prompt + recent run summaries. Models are picked from openclaw.json's configured providers. Default is disabled (opt-in).",
     "openclaw_config_path": "~/.openclaw/openclaw.json",
     "max_tokens": 1024,
-    "timeout_seconds": 60
+    "timeout_seconds": 60,
+
+    "_tunings_comment": "Per-model tuning overrides. Different model families need different knobs to produce clean JSON output. The built-in registry in ai.py (BUILTIN_TUNINGS) covers Qwen2/3, GPT-OSS, DeepSeek, GLM, Gemma, Mistral, Nemotron via pattern matching on model_id. Overrides here win in resolution order: exact model_key match (provider/model_id) -> exact model_id match -> built-in pattern -> default. Each tuning may set: extra_body (dict merged into request body), temperature, max_tokens, system_prompt_prefix (text prepended to user message). See GET /api/ai/tunings for the active registry.",
+    "tunings": {
+      "_example_key": "vllm-c3po/qwen3.6-35b",
+      "_example_value": {
+        "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
+        "temperature": 0.0,
+        "max_tokens": 2048
+      }
+    }
   },
 
   "healthchecks": {

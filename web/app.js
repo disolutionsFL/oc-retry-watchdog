@@ -787,8 +787,10 @@ $("#settings-btn").addEventListener("click", async () => {
   try {
     const models = await api("GET", "/api/ai/models");
     const opts = `<option value="">— none —</option>` +
-      (models || []).map(m =>
-        `<option value="${escapeAttr(m.key)}">${escapeHtml(m.label)}</option>`).join("");
+      (models || []).map(m => {
+        const tuning = m.tuning_name ? ` · tuning: ${m.tuning_name}` : "";
+        return `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label)}${escapeHtml(tuning)}</option>`;
+      }).join("");
     $("#setting-ai-primary").innerHTML = opts;
     $("#setting-ai-primary").value = state.settings.ai_primary_model || "";
     $("#setting-ai-fallback").innerHTML = opts;
