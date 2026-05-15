@@ -150,10 +150,10 @@
             <li>
               <div class="feat-title">
                 <span class="feat-icon">&#9203;</span>
-                <strong>Healthcheck suggestions</strong>
+                <strong>Healthcheck suggestions + enforcement</strong>
                 <span class="feat-status feat-enabled">active</span>
               </div>
-              <div class="hint">AI-proposed pre-retry healthchecks (e.g. "vLLM is responding on :8100"). Click the healthchecks badge on any cron to manage them and use the <em>Suggest with AI</em> button. <strong>Enforcement during retries</strong> (skipping a retry when a healthcheck fails) lands in a follow-up release; for now this manages the rules.</div>
+              <div class="hint">AI-proposed pre-retry healthchecks (e.g. "vLLM is responding on :8100"). Click the healthchecks badge on any cron to manage them and use the <em>Suggest with AI</em> button. Enforcement is live: if any healthcheck fails before a retry, the watchdog skips the retry and fires a <em>dependency unhealthy</em> alert with the failing check's details — the retry count is not consumed.</div>
             </li>
             <li class="feat-future">
               <div class="feat-title">

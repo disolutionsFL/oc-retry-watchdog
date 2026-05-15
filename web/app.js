@@ -265,10 +265,8 @@ function openChecksEditor(cronId, kind = "predicates") {
     $("#pred-modal-title").textContent = "Edit healthchecks";
     $("#pred-modal-hint").innerHTML =
       "Healthchecks run <strong>before</strong> the watchdog retries a failed cron. " +
-      "If any healthcheck fails, the retry is skipped — the watchdog assumes a dependency is down " +
-      "and alerts directly rather than burning the retry. " +
-      "Changes here write to <code>config.json</code> on the daemon host. " +
-      "<em>Enforcement during retries lands in a follow-up release; for now this manages + AI-suggests the rules.</em>";
+      "If any healthcheck fails, the retry is <strong>skipped</strong> — a <em>dependency unhealthy</em> alert fires with the failing check's details, and the cron's retry count is not consumed (a down dependency isn't the cron's fault). " +
+      "Changes here write to <code>config.json</code> on the daemon host and take effect on the very next webhook.";
   } else {
     $("#pred-modal-title").textContent = "Edit predicates";
     $("#pred-modal-hint").innerHTML =

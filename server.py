@@ -31,8 +31,9 @@ import alert as alert_mod
 import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
 import ai as ai_mod
+import predicates as predicates_mod
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -147,6 +148,11 @@ class Watchdog:
         self.conn = db_mod.connect(cfg["db"]["path"])
         db_mod.init_schema(self.conn, settings_defaults_for_db(cfg))
         self._lock = threading.Lock()
+        # In-memory state for healthcheck file_grew predicates. Healthchecks
+        # run inline on retry decisions (not via the scanner) so we don't use
+        # the predicate_history table for them — keeps the audit trail of
+        # post-success predicate state cleaner.
+        self._healthcheck_state: dict = {}
         # Auto-register predicate-configured crons so they appear in the UI
         # before their first failure/test-alert. Metadata refreshes in the
         # background via cron_info_refresh_loop.
@@ -199,6 +205,39 @@ class Watchdog:
         ).fetchone()
         return int(row["c"] if row else 0)
 
+    def _evaluate_healthchecks(self, cron_id: str) -> tuple[bool, dict | None]:
+        """Evaluate all healthchecks for this cron. Returns (all_passed, first_failure_detail).
+
+        first_failure_detail (when not None) is a dict with:
+          index        index in the healthcheck list (0-based)
+          type         the predicate type that failed
+          description  the operator-supplied description (shown in alert)
+          error        the predicate's failure message
+        """
+        hcs = (self.cfg.get("healthchecks") or {}).get(cron_id) or []
+        if not isinstance(hcs, list) or not hcs:
+            return True, None
+        tz_name = self.cfg["server"]["timezone"]
+        for i, hc in enumerate(hcs):
+            try:
+                ok, msg = predicates_mod.evaluate(
+                    hc,
+                    tz_name=tz_name,
+                    state_get=lambda key, cid=cron_id, idx=i:
+                        self._healthcheck_state.get((cid, idx)),
+                    state_set=lambda key, val, cid=cron_id, idx=i:
+                        self._healthcheck_state.__setitem__((cid, idx), val),
+                )
+            except Exception as e:
+                return False, {"index": i, "type": hc.get("type", "?"),
+                               "description": hc.get("description", ""),
+                               "error": f"{type(e).__name__}: {e}"}
+            if not ok:
+                return False, {"index": i, "type": hc.get("type", "?"),
+                               "description": hc.get("description", ""),
+                               "error": msg}
+        return True, None
+
     # ----- main entry points
 
     def handle_failure(
@@ -215,6 +254,16 @@ class Watchdog:
                                       None, None, "declined-disabled", failure_source,
                                       error, "cron disabled in watchdog")
             return {"ok": True, "action": "declined", "reason": "disabled"}
+
+        # Healthcheck gating: if any pre-retry healthcheck fails, skip the
+        # retry — a dependency is down and retrying won't help. Doesn't count
+        # against max_retries (failure isn't the cron's fault). Fires a
+        # dependency-unhealthy alert with the failing healthcheck's details.
+        hc_passed, hc_failure = self._evaluate_healthchecks(cron_id)
+        if not hc_passed:
+            return self._fire_dependency_alert(
+                cron, failed_run_id, error, failure_source, hc_failure
+            )
 
         if retries_today < max_retries:
             return self._fire_retry(cron, failed_run_id, error, failure_source)
@@ -512,7 +561,8 @@ class Watchdog:
     def _fire_alert(self, cron: dict, failed_run_id: str | None, error: str | None,
                     failure_source: str, retries_today: int,
                     subject_override: str | None = None,
-                    notes: str | None = None) -> dict:
+                    notes: str | None = None,
+                    outcome: str = "declined-over-limit") -> dict:
         cfg = self.cfg
         recipient = self._resolve_recipient(cron)
         if not recipient:
@@ -546,12 +596,14 @@ class Watchdog:
             extra_env=cfg["alert"].get("sender_env") or {},
         )
 
-        # Record the alert and the originating retry-decision row in one transaction.
+        # Record the alert and the originating retry-decision row.
+        # `outcome` differentiates declined-over-limit from
+        # declined-dependency-down in the audit trail.
         if failure_source != "test":
             db_mod.insert_retry_event(
                 self.conn, cron["cron_id"], failed_run_id, now_iso(),
-                None, None, "declined-over-limit", failure_source, error,
-                f"retries_today={retries_today}",
+                None, None, outcome, failure_source, error,
+                notes or f"retries_today={retries_today}",
             )
         db_mod.insert_alert_event(
             self.conn, cron["cron_id"], now_iso(), recipient,
@@ -559,6 +611,43 @@ class Watchdog:
         )
         return {"ok": ok, "action": "alerted", "recipient": recipient,
                 "error": None if ok else err}
+
+    def _fire_dependency_alert(self, cron: dict, failed_run_id: str | None,
+                               original_error: str | None,
+                               failure_source: str,
+                               hc_failure: dict) -> dict:
+        """Alert path when a pre-retry healthcheck fails. Skips the retry,
+        marks the retry_events row as declined-dependency-down, and uses a
+        distinct alert subject so the operator can filter these out from
+        the more common max-retries-exhausted alerts."""
+        cron_name = cron.get("name") or cron["cron_id"]
+        subject = f"[OpenClaw Cron Failure] {cron_name} — dependency unhealthy"
+        # Stitch healthcheck details into the body's error section so the
+        # operator immediately sees what was checked + how it failed
+        hc_desc = hc_failure.get("description") or hc_failure.get("type") or "(unnamed)"
+        augmented_error = (
+            f"Pre-retry healthcheck failed — retry was SKIPPED.\n"
+            f"\n"
+            f"  Healthcheck #{hc_failure['index'] + 1}: {hc_desc}\n"
+            f"  Check type: {hc_failure.get('type')}\n"
+            f"  Reason:     {hc_failure.get('error')}\n"
+            f"\n"
+            f"Original cron error:\n"
+            f"  {original_error or '(none)'}\n"
+            f"\n"
+            f"The watchdog declined to retry because a dependency this cron uses "
+            f"appears to be down. Fix the dependency, then trigger a manual retry "
+            f"from the watchdog UI or run the cron yourself."
+        )
+        notes = f"healthcheck#{hc_failure['index']}: {hc_desc} — {hc_failure.get('error', '')[:120]}"
+        return self._fire_alert(
+            cron, failed_run_id, augmented_error,
+            failure_source=failure_source,
+            retries_today=0,
+            subject_override=subject,
+            notes=notes,
+            outcome="declined-dependency-down",
+        )
 
 
 # Module-level singleton, set in main()
