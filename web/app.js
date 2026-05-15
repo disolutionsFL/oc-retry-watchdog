@@ -489,7 +489,11 @@ $("#pred-save-btn").addEventListener("click", async () => {
   }
   try {
     await api("PUT", `/api/crons/${predEditorState.cronId}/predicates`, payload);
-    toast(`Saved ${payload.length} predicate(s) for ${predEditorState.cronId.slice(0, 8)}`, "good");
+    const cron = state.crons.find(c => c.cron_id === predEditorState.cronId);
+    const label = cron && cron.name
+      ? `${cron.name} (${predEditorState.cronId})`
+      : predEditorState.cronId;
+    toast(`Saved ${payload.length} predicate(s) for ${label}`, "good");
     $("#predicates-modal").close();
     loadAll();
   } catch (e) {
