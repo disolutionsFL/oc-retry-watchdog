@@ -493,6 +493,24 @@ dialog select {
   margin-bottom: 4px;
 }
 
+/* Tuning info shown below a model dropdown — only for the selected model,
+   not in every option's label (which would be noise since every model
+   has a matching tuning). */
+.tuning-info {
+  margin-top: 4px;
+  font-size: 11px; color: var(--muted);
+  line-height: 1.45;
+  min-height: 16px;
+}
+.tuning-info:empty { display: none; }
+.tuning-info .tuning-name {
+  color: var(--accent); font-weight: 600;
+}
+.tuning-info .tuning-src {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; opacity: 0.75;
+}
+
 /* Feature list: each AI feature is a card with title row + description.
    feat-future is muted to signal "coming soon" without hiding it entirely
    — operators see what's on the roadmap. */

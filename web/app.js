@@ -787,15 +787,16 @@ $("#settings-btn").addEventListener("click", async () => {
   // Populate model dropdowns from openclaw.json
   try {
     const models = await api("GET", "/api/ai/models");
+    state.aiModels = models || [];
     const opts = `<option value="">— none —</option>` +
-      (models || []).map(m => {
-        const tuning = m.tuning_name ? ` · tuning: ${m.tuning_name}` : "";
-        return `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label)}${escapeHtml(tuning)}</option>`;
-      }).join("");
+      state.aiModels.map(m =>
+        `<option value="${escapeAttr(m.key)}" title="${escapeAttr((m.tuning_notes || "").slice(0, 200))}">${escapeHtml(m.label)}</option>`).join("");
     $("#setting-ai-primary").innerHTML = opts;
     $("#setting-ai-primary").value = state.settings.ai_primary_model || "";
     $("#setting-ai-fallback").innerHTML = opts;
     $("#setting-ai-fallback").value = state.settings.ai_fallback_model || "";
+    renderTuningInfo("primary");
+    renderTuningInfo("fallback");
   } catch (e) {
     toast(`Could not load model list: ${e.message}`, "bad");
   }
@@ -825,6 +826,27 @@ function updateAIConfigVisibility() {
   $("#ai-config-section").classList.toggle("hidden", !on);
 }
 $("#setting-ai-enabled").addEventListener("change", updateAIConfigVisibility);
+
+// Render the tuning info line beneath a model dropdown for the currently
+// selected model. Empty when no model is selected.
+function renderTuningInfo(slot) {
+  const sel = $(`#setting-ai-${slot}`);
+  const info = $(`#${slot}-tuning-info`);
+  const key = sel.value;
+  if (!key || !state.aiModels) { info.innerHTML = ""; return; }
+  const m = state.aiModels.find(x => x.key === key);
+  if (!m) { info.innerHTML = ""; return; }
+  const name = m.tuning_name || "default";
+  const notes = (m.tuning_notes || "").trim();
+  info.innerHTML = `
+    Tuning: <span class="tuning-name">${escapeHtml(name)}</span>
+    ${m.tuning_source ? `<span class="tuning-src">(${escapeHtml(m.tuning_source)})</span>` : ""}
+    ${notes ? `<br><span>${escapeHtml(notes)}</span>` : ""}
+  `;
+}
+
+$("#setting-ai-primary").addEventListener("change", () => renderTuningInfo("primary"));
+$("#setting-ai-fallback").addEventListener("change", () => renderTuningInfo("fallback"));
 
 // ----- bootstrap
 
