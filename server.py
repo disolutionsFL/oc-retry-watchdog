@@ -1,8 +1,10 @@
 """OpenClaw Retry Watchdog daemon.
 
 v0.1 — webhook receive + retry + alert + read-only API + minimal UI page.
-v0.2 — adds predicate verification.
-v0.3 — adds heartbeat / missed-run detection.
+v0.2 — predicate verification (post-success side-effect checks).
+v0.3 — heartbeat / missed-run detection + full UI + OpenClaw admin wiring.
+v0.4 — per-model tuning registry, offline-model detection, context-budget awareness.
+v0.5 — healthcheck framework with pre-retry enforcement + AI-assisted suggestions.
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
