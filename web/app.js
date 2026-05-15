@@ -306,6 +306,49 @@ async function api(method, path, body) {
   return payload;
 }
 
+// ----- themed confirm dialog (replaces window.confirm) -----
+let _confirmResolver = null;
+
+function appConfirm({ title, message, confirmLabel = "Confirm", confirmKind = "primary", cancelLabel = "Cancel" }) {
+  $("#confirm-title").textContent = title || "Confirm";
+  // message can include simple inline HTML (e.g. <code>UUID</code>)
+  $("#confirm-message").innerHTML = message || "";
+  const ok = $("#confirm-ok");
+  ok.textContent = confirmLabel;
+  ok.className = confirmKind;
+  $("#confirm-cancel").textContent = cancelLabel;
+  $("#confirm-modal").showModal();
+  return new Promise(resolve => { _confirmResolver = resolve; });
+}
+
+function _confirmResolve(value) {
+  $("#confirm-modal").close();
+  if (_confirmResolver) {
+    const r = _confirmResolver;
+    _confirmResolver = null;
+    r(value);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("#confirm-ok").addEventListener("click", () => _confirmResolve(true));
+  $("#confirm-cancel").addEventListener("click", () => _confirmResolve(false));
+  // Esc-close or backdrop-close
+  $("#confirm-modal").addEventListener("close", () => {
+    if (_confirmResolver) _confirmResolve(false);
+  });
+});
+// Fallback: if DOMContentLoaded already fired (script at end of body), wire now too
+if (document.readyState !== "loading") {
+  const ok = $("#confirm-ok"), cancel = $("#confirm-cancel"), modal = $("#confirm-modal");
+  if (ok && !ok.dataset.wired) {
+    ok.dataset.wired = "1";
+    ok.addEventListener("click", () => _confirmResolve(true));
+    cancel.addEventListener("click", () => _confirmResolve(false));
+    modal.addEventListener("close", () => { if (_confirmResolver) _confirmResolve(false); });
+  }
+}
+
 function toast(msg, kind = "") {
   const el = $("#toast");
   el.className = kind;
@@ -492,7 +535,12 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset?.action === "wire-cron") {
-    if (!confirm(`Wire failure-alert webhook on cron ${t.dataset.id} to this watchdog?`)) return;
+    if (!await appConfirm({
+      title: "Wire failure-alert webhook?",
+      message: `Configure cron <code>${escapeHtml(t.dataset.id)}</code> to POST its failure-alert at this watchdog. Auto-registers the cron in the watchdog DB on success.`,
+      confirmLabel: "Wire",
+      confirmKind: "success",
+    })) return;
     t.disabled = true;
     try {
       const r = await api("POST", `/api/openclaw-jobs/${t.dataset.id}/wire`);
@@ -504,7 +552,12 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset?.action === "unwire-cron") {
-    if (!confirm(`Remove failure-alert webhook from cron ${t.dataset.id}? Cron stays in OpenClaw + watchdog DB.`)) return;
+    if (!await appConfirm({
+      title: "Unwire failure-alert webhook?",
+      message: `Remove the failure-alert webhook from cron <code>${escapeHtml(t.dataset.id)}</code>. The cron stays in OpenClaw and the watchdog DB; only the alert-routing is removed.`,
+      confirmLabel: "Unwire",
+      confirmKind: "danger",
+    })) return;
     t.disabled = true;
     try {
       const r = await api("POST", `/api/openclaw-jobs/${t.dataset.id}/unwire`);
@@ -516,7 +569,12 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset?.action === "delete-orphan") {
-    if (!confirm(`Remove cron ${t.dataset.id} from the watchdog DB? This also clears its predicates from config.json. Retry/alert history rows are kept for forensics.`)) return;
+    if (!await appConfirm({
+      title: "Remove orphan?",
+      message: `Remove cron <code>${escapeHtml(t.dataset.id)}</code> from the watchdog DB and clear its predicates from <code>config.json</code>. Retry/alert history rows are kept for forensics.`,
+      confirmLabel: "Remove",
+      confirmKind: "danger",
+    })) return;
     t.disabled = true;
     try {
       const r = await api("DELETE", `/api/crons/${t.dataset.id}`);
@@ -528,14 +586,24 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset?.action === "retry-now") {
-    if (!confirm(`Trigger 'openclaw cron run ${t.dataset.id}'?`)) return;
+    if (!await appConfirm({
+      title: "Manual retry?",
+      message: `Invoke <code>openclaw cron run ${escapeHtml(t.dataset.id)}</code>. This actually re-fires the cron; any emails or side-effects it produces will happen.`,
+      confirmLabel: "Retry now",
+      confirmKind: "primary",
+    })) return;
     try {
       const r = await api("POST", `/api/crons/${t.dataset.id}/retry-now`);
       toast(`Retry: ${r.action}${r.run_id ? ` (run ${r.run_id})` : ""}`, r.action === "retried" ? "good" : "bad");
       setTimeout(loadAll, 500);
     } catch (err) { toast(`Failed: ${err.message}`, "bad"); }
   } else if (t.dataset?.action === "test-alert") {
-    if (!confirm(`Send a test alert email for this cron?`)) return;
+    if (!await appConfirm({
+      title: "Send test alert?",
+      message: `Send a synthetic alert email for this cron to verify the email delivery path. No real failure is recorded.`,
+      confirmLabel: "Send",
+      confirmKind: "success",
+    })) return;
     try {
       const r = await api("POST", `/api/crons/${t.dataset.id}/test-alert`);
       toast(r.ok ? `Test alert sent to ${r.recipient}` : `Alert failed: ${r.error || "?"}`,

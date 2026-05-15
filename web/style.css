@@ -387,6 +387,38 @@ code { background: var(--bg-pill); padding: 1px 4px; border-radius: 3px; font-si
 
 tr.row-orphan { background: rgba(178,28,28,0.06); }
 
+/* ----- themed confirm dialog (replaces native window.confirm) ----- */
+.confirm-modal {
+  width: min(92vw, 420px);
+  padding: 18px 22px 14px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-surface); color: var(--fg);
+}
+.confirm-modal[open] { display: block; }
+.confirm-modal::backdrop { background: var(--backdrop); }
+.confirm-modal h3 { margin: 0 0 8px; font-size: 15px; }
+.confirm-modal #confirm-message {
+  margin: 0; padding-bottom: 6px;
+  font-size: 13px; line-height: 1.5; color: var(--fg);
+}
+.confirm-modal #confirm-message code { font-size: 11px; }
+.confirm-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin: 14px 0 0; padding: 0;
+}
+.confirm-actions button {
+  padding: 6px 14px; font-size: 13px; font-weight: 600;
+  border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-surface); color: var(--fg);
+}
+.confirm-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.confirm-actions button.success { background: var(--good); color: white; border-color: var(--good); }
+.confirm-actions button.success:hover { color: white; border-color: var(--good); opacity: 0.88; }
+.confirm-actions button.danger  { background: var(--bad);  color: white; border-color: var(--bad);  }
+.confirm-actions button.danger:hover  { color: white; border-color: var(--bad);  opacity: 0.88; }
+.confirm-actions button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+.confirm-actions button.primary:hover { color: white; border-color: var(--accent); opacity: 0.88; }
+
 /* ----- responsive ----- */
 
 /* Wrap the cron table so any unavoidable overflow stays inside the
