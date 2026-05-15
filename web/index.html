@@ -101,26 +101,71 @@
         <input type="number" name="default_max_retries" id="setting-max-retries" min="0" max="10">
       </label>
 
-      <hr>
-      <h3 class="settings-subhead">AI assist (optional)</h3>
-      <label class="settings-toggle">
-        <input type="checkbox" id="setting-ai-enabled">
-        <span>Enable AI-suggested predicates</span>
-      </label>
-      <p class="settings-help">When on, the predicate editor gets a <em>Suggest with AI</em> button that asks a model from OpenClaw's configured providers to propose predicates for that cron. Suggestions are <strong>appended</strong> to the form — nothing is saved without your review.</p>
+      <section class="settings-section">
+        <header class="settings-section-header">
+          <h3>AI Assist</h3>
+          <span class="settings-section-tag">Optional</span>
+        </header>
 
-      <label>Primary model:
-        <select id="setting-ai-primary">
-          <option value="">— none —</option>
-        </select>
-      </label>
+        <label class="settings-toggle-row">
+          <input type="checkbox" id="setting-ai-enabled">
+          <div class="settings-toggle-text">
+            <strong>Enable AI features</strong>
+            <div class="hint">When on, AI-powered helpers appear throughout the UI. Each feature is listed below — toggle the master switch to use them. All calls go only to the models you configure here; nothing leaves your network unless you point at a remote endpoint.</div>
+          </div>
+        </label>
 
-      <label>Fallback model:
-        <select id="setting-ai-fallback">
-          <option value="">— none —</option>
-        </select>
-      </label>
-      <p class="settings-help">Both lists are populated from <code>openclaw.json</code>'s configured providers + models. Fallback is used if the primary errors or returns unparseable JSON.</p>
+        <div class="settings-subsection" id="ai-config-section">
+          <h4>Default models</h4>
+          <p class="hint">Picked from <code>openclaw.json</code>'s configured providers + models. Each model's resolved tuning is shown inline. The fallback is used only if the primary errors or returns unparseable output.</p>
+
+          <label class="settings-field">
+            <span class="label-text">Primary model</span>
+            <select id="setting-ai-primary"><option value="">— none —</option></select>
+          </label>
+
+          <label class="settings-field">
+            <span class="label-text">Fallback model</span>
+            <select id="setting-ai-fallback"><option value="">— none —</option></select>
+          </label>
+
+          <h4>Features</h4>
+          <ul class="settings-feature-list">
+            <li>
+              <div class="feat-title">
+                <span class="feat-icon">&#10024;</span>
+                <strong>Predicate suggestions</strong>
+                <span class="feat-status feat-enabled">active</span>
+              </div>
+              <div class="hint">Adds a <em>Suggest with AI</em> button to the predicate editor. Asks the primary model to propose predicates from the cron's prompt + recent run history. Results are appended to the form for your review — nothing is saved without an explicit Save.</div>
+            </li>
+            <li class="feat-future">
+              <div class="feat-title">
+                <span class="feat-icon">&#9203;</span>
+                <strong>Healthcheck suggestions</strong>
+                <span class="feat-status feat-coming">planned</span>
+              </div>
+              <div class="hint">AI-proposed pre-retry healthchecks (e.g. "vLLM is responding on :8100") so the watchdog skips retries when a dependency is down.</div>
+            </li>
+            <li class="feat-future">
+              <div class="feat-title">
+                <span class="feat-icon">&#128290;</span>
+                <strong>Smart retry tuning</strong>
+                <span class="feat-status feat-coming">planned</span>
+              </div>
+              <div class="hint">Observe each cron's retry success rate and suggest a per-cron <code>max_retries</code> value backed by the data.</div>
+            </li>
+            <li class="feat-future">
+              <div class="feat-title">
+                <span class="feat-icon">&#128190;</span>
+                <strong>Failure-mode explanations</strong>
+                <span class="feat-status feat-coming">planned</span>
+              </div>
+              <div class="hint">When an alert fires, include an AI-generated one-paragraph diagnosis of the likely root cause based on the failure pattern + the cron's prompt.</div>
+            </li>
+          </ul>
+        </div>
+      </section>
 
       <hr>
       <p><small>Sender account: <code id="setting-sender">(loading)</code></small></p>

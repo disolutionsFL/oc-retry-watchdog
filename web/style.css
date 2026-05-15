@@ -419,20 +419,13 @@ tr.row-orphan { background: rgba(178,28,28,0.06); }
 .confirm-actions button.primary { background: var(--accent); color: white; border-color: var(--accent); }
 .confirm-actions button.primary:hover { color: white; border-color: var(--accent); opacity: 0.88; }
 
-/* Settings AI section */
-.settings-subhead {
-  margin: 4px 0 6px; font-size: 12px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+/* Make sure checkboxes & radios aren't stretched to full width by the
+   generic `dialog input { width: 100% }` rule above. */
+dialog input[type="checkbox"],
+dialog input[type="radio"] {
+  width: auto; display: inline-block; margin: 0;
 }
-.settings-toggle {
-  display: flex; align-items: center; gap: 8px;
-  margin: 8px 0;
-}
-.settings-toggle input { margin: 0; }
-.settings-help {
-  margin: 4px 0 10px;
-  font-size: 11px; color: var(--muted); line-height: 1.4;
-}
+
 dialog select {
   display: block; width: 100%; padding: 6px 8px; margin-top: 4px;
   font-size: 13px; color: var(--fg);
@@ -440,9 +433,97 @@ dialog select {
   background: var(--bg);
 }
 
-/* AI status pill */
-.pill.ai-on  { background: rgba(46,125,50,0.18); color: var(--good); }
-.pill.ai-off { background: var(--bg-pill); color: var(--muted); }
+/* ----- Settings sections (designed for future AI features + other sections) ----- */
+
+.settings-section { margin: 14px 0; }
+
+.settings-section-header {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 4px 0 8px;
+}
+.settings-section-header h3 {
+  margin: 0; font-size: 12px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+}
+.settings-section-tag {
+  font-size: 10px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 8px; background: var(--bg-pill);
+}
+
+/* Master enable toggle: callout-style row with checkbox + text */
+.settings-toggle-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 10px 12px; margin: 8px 0;
+  background: var(--bg-pill); border-radius: 4px;
+  cursor: pointer;
+}
+.settings-toggle-row input[type="checkbox"] {
+  margin-top: 3px; flex-shrink: 0;
+}
+.settings-toggle-text { flex: 1; }
+.settings-toggle-text strong {
+  display: block; font-size: 13px; margin-bottom: 2px;
+}
+.settings-toggle-text .hint {
+  margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;
+}
+
+/* Sub-section inside a settings section (e.g. "Default models" + "Features"
+   under "AI Assist"). Hidden when the master toggle is off. */
+.settings-subsection {
+  padding: 4px 0 8px 8px;
+  border-left: 2px solid var(--border);
+  margin: 8px 0 8px 12px;
+}
+.settings-subsection.hidden { display: none !important; }
+.settings-subsection h4 {
+  margin: 10px 0 4px; font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600;
+}
+.settings-subsection .hint {
+  margin: 0 0 8px; font-size: 11px; color: var(--muted); line-height: 1.45;
+}
+
+.settings-field {
+  display: block; margin: 8px 0;
+}
+.settings-field .label-text {
+  display: block; font-size: 12px; color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* Feature list: each AI feature is a card with title row + description.
+   feat-future is muted to signal "coming soon" without hiding it entirely
+   — operators see what's on the roadmap. */
+.settings-feature-list {
+  list-style: none; padding: 0; margin: 4px 0 0;
+}
+.settings-feature-list li {
+  padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 3px; margin: 6px 0;
+}
+.settings-feature-list li.feat-future { opacity: 0.6; }
+.settings-feature-list .feat-title {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 2px;
+}
+.settings-feature-list .feat-icon { font-size: 13px; flex-shrink: 0; }
+.settings-feature-list .feat-title strong { font-size: 12px; flex: 1; }
+.settings-feature-list .feat-status {
+  font-size: 9px; font-weight: 700; padding: 1px 6px;
+  border-radius: 8px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.settings-feature-list .feat-enabled {
+  background: rgba(46,125,50,0.20); color: var(--good);
+}
+.settings-feature-list .feat-coming {
+  background: var(--bg-pill); color: var(--muted);
+}
+.settings-feature-list .hint {
+  margin: 4px 0 0; font-size: 11px; color: var(--muted); line-height: 1.4;
+}
 
 /* ----- responsive ----- */
 

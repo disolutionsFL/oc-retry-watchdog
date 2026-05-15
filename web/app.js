@@ -783,6 +783,7 @@ $("#settings-btn").addEventListener("click", async () => {
   $("#setting-uptime").textContent = uptimeStr(state.settings.daemon_uptime_seconds);
   // AI section
   $("#setting-ai-enabled").checked = !!state.settings.ai_enabled;
+  updateAIConfigVisibility();
   // Populate model dropdowns from openclaw.json
   try {
     const models = await api("GET", "/api/ai/models");
@@ -817,6 +818,13 @@ $("#settings-save").addEventListener("click", async () => {
 });
 
 $("#settings-cancel").addEventListener("click", () => $("#settings-modal").close());
+
+// Toggle the AI sub-section's visibility when the master switch flips.
+function updateAIConfigVisibility() {
+  const on = !!$("#setting-ai-enabled").checked;
+  $("#ai-config-section").classList.toggle("hidden", !on);
+}
+$("#setting-ai-enabled").addEventListener("change", updateAIConfigVisibility);
 
 // ----- bootstrap
 
