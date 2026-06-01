@@ -356,6 +356,29 @@ curl -sf http://localhost:9095/api/settings && echo
 
 Settings-table values are seeded from `config.json` only on first init; UI-editable defaults persist in SQLite afterward. Restart picks up everything else: paths, sender binary, sender env, healthcheck / predicate rules, AI configuration.
 
+### Keep the watchdog independent of openclaw-gateway
+
+It's tempting to add `PartOf=openclaw-gateway.service`, `Requires=`, or `BindsTo=` to the unit so the watchdog stops/starts alongside the gateway. **Don't.** The shipped `retry-watchdog.service.example` deliberately omits any such directive and uses only `After=network-online.target` for ordering.
+
+Two reasons:
+
+1. **Lifecycle propagation breaks on non-atomic restart scripts.** `PartOf=` propagates `stop` and `restart` from the partner unit, but not a fresh `start`-from-stopped. Many operator-facing "restart gateway" tools (dashboard buttons, ops scripts) implement restart as `stop` → side-effects → `start` rather than an atomic `systemctl restart`. With `PartOf=`, the watchdog gets stopped on the first step and never gets restarted on the third — leaving you silently un-monitored until the next reboot. This bit a real deployment 2026-06-01.
+2. **The watchdog is most useful during gateway maintenance, not least.** If `openclaw cron run` calls fail while the gateway is down, the watchdog catches them in its normal failure-handling path (records a failed retry event, the row shows in the UI for forensics). There's no functional reason to take the watchdog down with the gateway.
+
+If you've installed a unit that has the offending directive, strip it:
+
+```bash
+sed -i '/^PartOf=openclaw-gateway.service$/d' ~/.config/systemd/user/retry-watchdog.service
+systemctl --user daemon-reload
+systemctl --user restart retry-watchdog.service
+```
+
+To take both down for maintenance, just be explicit:
+
+```bash
+systemctl --user stop retry-watchdog.service openclaw-gateway.service
+```
+
 ## Running on Windows + WSL2
 
 WSL2 Ubuntu is a typical host for OpenClaw on a Windows machine. The watchdog runs cleanly there but a few WSL-specific gotchas are worth knowing about.
