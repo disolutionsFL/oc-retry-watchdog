@@ -31,9 +31,8 @@
   },
 
   "heartbeat": {
-    "_comment": "Scanner config. v0.2 uses interval_minutes + lookback_hours + runs_dir_path. v0.3 will add missed-run detection (uses grace_period_minutes + jobs_json_path).",
+    "_comment": "Background scanner config. Runs every interval_minutes, iterates each cron with predicates configured, and evaluates them against the latest status=ok run found in runs_dir_path/<cron_id>.jsonl. Failed predicates trigger the same retry-or-alert flow as a webhook failure. lookback_hours bounds how far back the scanner considers runs (prevents re-evaluating very old runs after a restart). jobs_json_path is read by the Admin view + AI suggestion plane to look up each cron's prompt + configured model. Missed-run detection (firing on crons that never ran at all) is NOT yet implemented; see Roadmap in the README.",
     "interval_minutes": 5,
-    "grace_period_minutes": 10,
     "lookback_hours": 6,
     "jobs_json_path": "~/.openclaw/cron/jobs.json",
     "runs_dir_path": "~/.openclaw/cron/runs"
@@ -89,14 +88,24 @@
   },
 
   "ai": {
-    "_comment": "Optional AI-assisted predicate suggestions. When the operator enables AI in Settings and picks a model, the predicate editor gets a 'Suggest with AI' button that asks the chosen model to propose predicates based on the cron's prompt + recent run summaries. Models are picked from openclaw.json's configured providers. Default is disabled (opt-in).",
+    "_comment": "Optional AI Assist plane (v0.4+). When enabled in Settings and a primary model is picked, three features become available: (1) Suggest with AI button in the predicate editor (v0.4); (2) Suggest with AI button in the healthcheck editor (v0.5); (3) Failure-mode explanations injected into alert emails AND available on-demand via the History modal's Explain button (v0.6). Models are picked from openclaw.json's configured providers; per-model tuning is auto-resolved from the built-in registry. Default is disabled (opt-in).",
     "openclaw_config_path": "~/.openclaw/openclaw.json",
+
+    "_max_tokens_comment": "Default token budget for predicate / healthcheck suggestion calls. Capped at the model's own maxTokens from openclaw.json at call time.",
     "max_tokens": 1024,
+
+    "_timeout_seconds_comment": "Per-call wall-clock for predicate / healthcheck suggestions. These run on operator click — slowness is tolerable.",
     "timeout_seconds": 60,
+
+    "_explain_timeout_seconds_comment": "Per-call wall-clock for inline alert-time failure-mode diagnoses (v0.6). Tight by design — a slow or offline model must not delay the alert email. Hard cap of 15s enforced in code regardless of the configured value.",
+    "explain_timeout_seconds": 8,
+
+    "_explain_max_tokens_comment": "Token budget for failure-mode diagnosis responses (v0.6). Diagnoses are short by spec (cause + next_step + confidence + category), so 512 is comfortable.",
+    "explain_max_tokens": 512,
 
     "_tunings_comment": "Per-model tuning overrides. Different model families need different knobs to produce clean JSON output. The built-in registry in ai.py (BUILTIN_TUNINGS) covers Qwen2/3, GPT-OSS, DeepSeek, GLM, Gemma, Mistral, Nemotron via pattern matching on model_id. Overrides here win in resolution order: exact model_key match (provider/model_id) -> exact model_id match -> built-in pattern -> default. Each tuning may set: extra_body (dict merged into request body), temperature, max_tokens, system_prompt_prefix (text prepended to user message). See GET /api/ai/tunings for the active registry.",
     "tunings": {
-      "_example_key": "vllm-c3po/qwen3.6-35b",
+      "_example_key": "vllm-host/qwen3.6-35b",
       "_example_value": {
         "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
         "temperature": 0.0,
@@ -106,7 +115,7 @@
   },
 
   "healthchecks": {
-    "_comment": "v0.2 placeholder — wired in v0.2.x. Pre-retry checks: if any healthcheck fails when a webhook failure comes in, the watchdog skips the retry (avoids retrying into a broken dependency) and fires a dependency-unhealthy alert instead.",
+    "_comment": "Per-cron pre-retry healthcheck rules (v0.5). Before the watchdog retries a failed cron, every configured healthcheck for that cron is evaluated. If ANY healthcheck fails, the retry is SKIPPED — the watchdog assumes a dependency is down (model server, upstream API, network split) and emits a dependency-unhealthy alert with the failing check's details. The retry-count budget is NOT consumed (a down dependency isn't the cron's fault). Same predicate-type schema as the predicates section above (file_mtime, file_grew, json_field_count, http_health). The AI Suggest with AI button in the healthcheck editor proposes rules with explicit anti-patterns (no checks on script files, config files, the cron's own output, etc. — only checks on external services that must be RESPONDING for a retry to have any chance of succeeding).",
     "00000000-0000-0000-0000-000000000000": [
       {
         "type": "http_health",

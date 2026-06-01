@@ -1,9 +1,7 @@
-"""Heartbeat scanner — v0.2 evaluates predicates against new successful runs.
+"""Heartbeat scanner — evaluates per-cron predicates against new successful runs.
 
-v0.3 will extend this scanner with missed-run detection (compare expected
-cron fire times against actual run records).
-
-The scanner runs in a background thread (interval from config). Each pass:
+Runs in a background thread (interval from config.heartbeat.interval_minutes).
+Each pass:
 
   1. Reads the predicate configuration from config.json (predicates: { cron_id: [...] }).
   2. For each cron_id with predicates, looks up the most-recent finished run
@@ -20,6 +18,16 @@ State:
   - "file_grew last-known size per (cron, predicate_index)" lives in the
     predicate_history SQLite table (persistent — needed for file_grew
     to be useful at all).
+
+NOT YET IMPLEMENTED — missed-run detection. The original design called for
+this scanner to also detect crons that never fired at all (host rebooted
+mid-window, OpenClaw gateway down, etc.) by comparing expected fire times
+derived from the cron expression against actual run records. That path
+remains unbuilt. The predicate path covers most practical "didn't run" cases
+indirectly — when a cron doesn't run, its predicates (e.g. file_mtime on the
+output) fail at the next scan and the failure flow kicks in. True missed-run
+detection would catch crons that fail silently AND don't have predicates
+configured. Tracked in the Roadmap section of README.
 """
 from __future__ import annotations
 

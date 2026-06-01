@@ -2,7 +2,11 @@
 
 v0.1 — webhook receive + retry + alert + read-only API + minimal UI page.
 v0.2 — predicate verification (post-success side-effect checks).
-v0.3 — heartbeat / missed-run detection + full UI + OpenClaw admin wiring.
+v0.3 — background predicate scanner running on a fixed interval + full UI
+       + OpenClaw admin wiring (Wire / Unwire crons from the dashboard).
+       Note: the v0.3 milestone was originally scoped to also include
+       missed-run detection (catching crons that never fired); that half
+       did not ship and remains in the Roadmap.
 v0.4 — per-model tuning registry, offline-model detection, context-budget awareness.
 v0.5 — healthcheck framework with pre-retry enforcement + AI-assisted suggestions.
 v0.6 — failure-mode explanations: AI diagnosis on alert emails + on-demand UI button.
@@ -65,10 +69,12 @@ DEFAULT_CONFIG = {
     "retries": {"default_max": 1, "enabled": True},
     "heartbeat": {
         "interval_minutes": 5,
-        "grace_period_minutes": 10,
         "lookback_hours": 6,
         "jobs_json_path": "~/.openclaw/cron/jobs.json",
         "runs_dir_path": "~/.openclaw/cron/runs",
+        # grace_period_minutes was reserved for missed-run detection (see
+        # heartbeat.py docstring + README Roadmap). Not declared here so the
+        # default surface matches what the code actually reads.
     },
     "openclaw_cli": "openclaw",
     "openclaw_instance_name": "",

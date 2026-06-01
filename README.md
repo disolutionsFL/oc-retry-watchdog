@@ -252,6 +252,34 @@ A separate `Admin` modal reads `openclaw.json`'s job list and surfaces:
 - Auto-registration of newly-wired crons in the watchdog DB (with metadata refreshed from `openclaw cron show`)
 - An **Orphans** section listing crons in the watchdog DB but not in `openclaw.json` (typical causes: cron deleted in OpenClaw, or recreated under a new UUID). Remove button deletes from the DB and strips any predicate/healthcheck config.
 
+## Roadmap — what hasn't shipped yet
+
+The Smart features list above is what's running today. A few items from the original design remain unbuilt:
+
+### Missed-run detection
+
+Originally scoped for v0.3 alongside the predicate scanner. The idea: every scan pass, derive each cron's expected fire time from its cron expression, compare to the latest run record in `cron/runs/<id>.jsonl`, and treat a missing run for a fire window older than a configurable grace period as a synthetic failure. Would catch silent omissions (host rebooting, OpenClaw gateway down at fire time) that today's webhook + predicate paths can't see.
+
+Status: not implemented. The predicate path covers the most common case indirectly — when a cron doesn't run, its output file's mtime ages out and the predicate fails at the next scan — but that only works for crons with predicates configured. Crons without predicates can silently miss a fire.
+
+Build cost: small for fixed-schedule crons (a stdlib cron-expression parser is ~80 lines), bigger if we want to handle nonstandard schedules. The dead `grace_period_minutes` knob that briefly lived in `DEFAULT_CONFIG` was removed in v0.6.0; if and when missed-run detection lands it'll come back.
+
+### Smart retry tuning
+
+Marked **planned** in the Settings UI feature list. The idea: observe each cron's retry success rate over time and suggest a per-cron `max_retries` value backed by the data (e.g. "this cron has succeeded on retry 7/8 times in the last 30 days — consider raising max_retries from 1 to 2"). Today `max_retries` is operator-set with no data behind the choice.
+
+Status: not implemented. The underlying `retry_events` table already stores everything needed; this is purely an analysis + UI surface.
+
+### Failure-mode explanation categories beyond the seven built-in
+
+The v0.6 explanation schema constrains `category` to `model | network | config | data | code | dependency | unknown`. Real-world failures sometimes don't fit cleanly into any of those. No plan to extend yet — operators have flagged a handful of edge cases (e.g. WhatsApp session logout being categorized as `config` when `dependency` would arguably fit better) but the seven categories have held up well enough in practice that adding more risks AI inconsistency. Tracked here so contributors don't propose this without context.
+
+### Things considered and rejected
+
+- **Multi-channel alerts** (Slack, WhatsApp, Pushover). The CLI-sender abstraction (`alert.sender_binary`) means an operator can already point at any sender that accepts `--account / --to / --subject / --body` — multi-channel doesn't need a code change, just configuration. Keeping the watchdog email-only by default.
+- **Auth on the daemon.** Trust-via-network-ACL (Tailscale, VPN) is the deliberate threat model. Adding shared-secret auth or basic auth on the UI is a one-evening change if the threat model ever shifts; not adding it speculatively.
+- **Prometheus exporter / metrics endpoint.** The `/api/heartbeat` and `/api/crons` endpoints already expose everything a sidecar exporter would need; not adding a second representation in-process.
+
 ## Web UI
 
 Single-page UI at the daemon's port (default 9095). Themed light/dark mode (system-preference + override; persisted in localStorage). Responsive: full table view on desktop, automatic card layout on phones.
