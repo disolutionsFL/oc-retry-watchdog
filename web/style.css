@@ -874,8 +874,10 @@ tr.missed-parse-error { background: rgba(201,122,0,0.05); }
 }
 .kind-missed   { background: var(--bg-pill);            color: var(--muted); }
 .kind-errored  { background: rgba(178,28,28,0.18);      color: var(--bad); }
+.kind-skipped  { background: rgba(201,122,0,0.18);      color: var(--warn); }
 .kind-unwired  { background: rgba(201,122,0,0.18);      color: var(--warn); }
 .kind-succeeded { background: rgba(46,125,50,0.18);     color: var(--good); }
+tr.missed-row-skipped { background: rgba(201,122,0,0.04); }
 
 /* Missed-run explain modal extra sections */
 .explain-refire { background: rgba(74,108,191,0.06); padding: 8px 10px; border-radius: 4px; }

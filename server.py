@@ -14,6 +14,10 @@ v0.7 — missed/failed cron run detection (jobs.json direct read, Fire/Wire one-
        + collapsible all-schedules panel with agent filter. Stdlib cron parser.
 v0.8 — explain-missed-run: AI diagnosis + live healthcheck states + refire
        recommendation for each row in the missed/failed panel.
+v0.8.1 — correctness: match expected fires to runs by `runAtMs` instead of
+       a +/- ts grace window. Adds "skipped" status. Uses the cron's
+       configured timeoutSeconds (from openclaw.json agents.defaults)
+       to distinguish "still running" from "missed".
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
@@ -45,7 +49,7 @@ import ai as ai_mod
 import predicates as predicates_mod
 import missed_runs as missed_runs_mod
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -517,16 +521,23 @@ class Watchdog:
 
     # ----- Missed-run detection (v0.7) -----
 
-    def find_missed_runs(self, *, day_iso: str | None = None,
-                         grace_minutes: int = 5) -> dict:
-        """Return the list of missed cron runs for a day window.
+    def find_missed_runs(self, *, day_iso: str | None = None) -> dict:
+        """Return the list of missed/errored/skipped cron runs for a day.
 
         `day_iso` is YYYY-MM-DD in `server.timezone`. Default is today.
         Crons do NOT need to be registered in the watchdog — this reads
         OpenClaw's jobs.json + runs/<id>.jsonl directly.
 
-        For days in the past, only fires before `now` are considered
-        misses (future expected fires can't possibly be misses yet).
+        Matching is by `runAtMs` (the scheduled fire time the OpenClaw
+        scheduler records in each run record), with the run's `status`
+        field driving classification (ok / error / skipped). Crons with
+        no run record for an expected fire are classified as MISSED only
+        once they're past their configured `agents.defaults.timeoutSeconds`
+        (30 min by default); within that window they may still be running
+        and are silently filtered out.
+
+        For today (and any future day), `until` is capped at `now` so
+        expected fires that simply haven't happened yet aren't reported.
         """
         tz_name = self.cfg["server"]["timezone"]
         tz = ZoneInfo(tz_name)
@@ -549,24 +560,24 @@ class Watchdog:
             return {
                 "day": day.isoformat(),
                 "timezone": tz_name,
-                "grace_minutes": grace_minutes,
                 "now_iso": now.isoformat(),
                 "missed": [],
             }
 
+        oc_cfg_path = (self.cfg.get("ai") or {}).get(
+            "openclaw_config_path", "~/.openclaw/openclaw.json")
         missed = missed_runs_mod.find_missed(
             jobs_json_path=self.cfg["heartbeat"]["jobs_json_path"],
             runs_dir=self.cfg["heartbeat"]["runs_dir_path"],
             since=since,
             until=effective_until,
             default_tz=tz_name,
-            grace_minutes=int(grace_minutes),
+            openclaw_config_path=oc_cfg_path,
             expected_webhook_url=self._expected_webhook_url(),
         )
         return {
             "day": day.isoformat(),
             "timezone": tz_name,
-            "grace_minutes": grace_minutes,
             "now_iso": now.isoformat(),
             "missed": missed,
         }
@@ -690,7 +701,7 @@ class Watchdog:
         return out
 
     def explain_missed_run(self, cron_id: str, expected_at_ms: int,
-                           grace_minutes: int = 5) -> dict:
+                           match_tolerance_seconds: int = 60) -> dict:
         """Explain one row in the Missed & failed cron runs panel.
 
         Reads cron metadata from jobs.json, looks for an actual run record
@@ -737,29 +748,36 @@ class Watchdog:
             "max_retries": 0,    # unused but _try_explain_failure may read it
         }
 
-        # Find runs in the +/- grace window around expected_at.
-        grace_ms = grace_minutes * 60 * 1000
-        lo = expected_at_ms - grace_ms
-        hi = expected_at_ms + grace_ms
-        window_runs = oc.all_runs_for(cron_id, runs_dir, lo, hi + 1)
+        # Look for the run record whose runAtMs is within tolerance of
+        # the expected fire time. Same authoritative match used by the
+        # panel itself (find_missed).
+        tol_ms = match_tolerance_seconds * 1000
+        # Fetch a generous window of records around the expected fire
+        # (filtered by ts here; matched by runAtMs below).
+        lo = expected_at_ms - 3600_000     # 1h before
+        hi = expected_at_ms + 4 * 3600_000  # 4h after
+        candidate_runs = oc.all_runs_for(cron_id, runs_dir, lo, hi)
 
-        # Decide kind from the same rules the panel uses.
-        ok_run = next(
-            (r for r in window_runs
-             if (r.get("status") or "").lower() == "ok"),
-            None,
-        )
-        if ok_run is not None:
-            # The row shouldn't have been in the panel at all — but if the
-            # operator clicked Explain anyway, tell them it succeeded.
-            kind = "succeeded"
-            matched = ok_run
-        elif window_runs:
-            kind = "errored"
-            matched = window_runs[-1]
-        else:
+        matched = None
+        for r in candidate_runs:
+            rA = r.get("runAtMs")
+            if isinstance(rA, (int, float)) and abs(rA - expected_at_ms) <= tol_ms:
+                matched = r
+                break
+
+        if matched is None:
             kind = "missed"
-            matched = None
+        else:
+            status = (matched.get("status") or "").lower()
+            if status == "ok":
+                kind = "succeeded"   # operator clicked Explain on a row that
+                                     # the panel shouldn't show; tell them.
+            elif status == "skipped":
+                kind = "skipped"
+            elif status == "error":
+                kind = "errored"
+            else:
+                kind = "errored"
 
         matched_block = None
         if matched is not None:
@@ -788,9 +806,19 @@ class Watchdog:
         suggested_action = ""
 
         if kind == "errored":
-            error_text = (matched.get("summary")
-                          if matched and isinstance(matched.get("summary"), str)
-                          else "(no run summary recorded)")
+            # Prefer the error field, fall back to summary.
+            error_text = ""
+            if matched:
+                err = matched.get("error")
+                summary = matched.get("summary")
+                if isinstance(err, str) and err:
+                    error_text = err
+                    if isinstance(summary, str) and summary:
+                        error_text += "\n\nRun summary excerpt:\n" + summary
+                elif isinstance(summary, str) and summary:
+                    error_text = summary
+            if not error_text:
+                error_text = "(no error / summary text recorded)"
             ai_diag, ai_err, ai_model_used = self._try_explain_failure(
                 cron=cron,
                 error=error_text,
@@ -798,8 +826,17 @@ class Watchdog:
                 retry_history=[],
                 run_log_excerpt=error_text,
             )
+        elif kind == "skipped":
+            reason = (matched.get("error") if matched else None) or "(no reason recorded)"
+            ai_err = (f"OpenClaw recorded this fire with status=skipped (reason: "
+                      f"{reason}). The run was not executed by design -- AI "
+                      f"diagnosis isn't meaningful here. Common causes: the "
+                      f"cron was disabled at fire time; the gateway was busy "
+                      f"with a long-running prior task; sessionTarget rules "
+                      f"prevented a new session.")
         elif kind == "missed":
-            ai_err = ("no run record exists in the window; AI diagnosis is "
+            ai_err = ("no run record exists for this expected fire and the "
+                      "configured agent timeout has elapsed; AI diagnosis is "
                       "not meaningful for missed fires. Common causes: the "
                       "OpenClaw gateway or its host was not running at the "
                       "expected time; the cron schedule has a recently-"
@@ -807,8 +844,8 @@ class Watchdog:
                       "enabled mid-day. Check the gateway journal around "
                       "the expected fire time.")
         elif kind == "succeeded":
-            ai_err = ("a status=ok run exists in this window; the panel "
-                      "should have filtered it out. Refresh to re-check.")
+            ai_err = ("a status=ok run exists for this expected fire; the "
+                      "panel should have filtered it out. Refresh to re-check.")
 
         # Derive a re-fire recommendation from the AI category (when present),
         # adjusted by current healthcheck state.
@@ -817,6 +854,14 @@ class Watchdog:
                 "Manual catch-up: click Fire to run `openclaw cron run "
                 "<id>` once. If the host or gateway was down at the expected "
                 "time and is up now, this should succeed on the first try."
+            )
+        elif kind == "skipped":
+            suggested_action = (
+                "OpenClaw intentionally skipped this fire (typically because "
+                "the cron was disabled or another constraint prevented it). "
+                "Re-firing manually with Fire will run it now; if the same "
+                "reason (e.g. disabled) still applies, the manual run will "
+                "also be skipped."
             )
         elif kind == "succeeded":
             suggested_action = "Already succeeded -- no action needed."
@@ -1482,16 +1527,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/missed-runs":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             day = (qs.get("day") or [None])[0]
-            grace = (qs.get("grace_minutes") or ["5"])[0]
             try:
-                grace_int = max(0, int(grace))
-            except ValueError:
-                self._send_json(400, {"ok": False,
-                                      "error": "grace_minutes must be an integer"})
-                return
-            try:
-                result = WATCHDOG.find_missed_runs(day_iso=day,
-                                                    grace_minutes=grace_int)
+                result = WATCHDOG.find_missed_runs(day_iso=day)
             except RuntimeError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return
@@ -1649,13 +1686,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False,
                                       "error": "expected_at_ms (number) is required"})
                 return
-            grace = body.get("grace_minutes")
-            grace_int = 5
-            if isinstance(grace, (int, float)):
-                grace_int = max(0, int(grace))
+            tol = body.get("match_tolerance_seconds")
+            tol_int = 60
+            if isinstance(tol, (int, float)):
+                tol_int = max(0, int(tol))
             try:
                 result = WATCHDOG.explain_missed_run(
-                    cron_id, int(expected), grace_minutes=grace_int)
+                    cron_id, int(expected),
+                    match_tolerance_seconds=tol_int)
             except RuntimeError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return

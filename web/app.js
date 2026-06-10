@@ -729,7 +729,7 @@ function renderMissedRuns(r) {
   const rows = r.missed || [];
   if (!rows.length) {
     tbody.innerHTML = "";
-    empty.textContent = `No missed or failed cron runs on ${r.day} (grace ${r.grace_minutes} min, tz ${r.timezone}). All expected fires that have occurred so far landed cleanly with status=ok.`;
+    empty.textContent = `No missed, errored, or skipped cron runs on ${r.day} (tz ${r.timezone}). All expected fires that have occurred so far landed cleanly with status=ok, or are still within their configured timeout.`;
     return;
   }
   empty.textContent = "";
@@ -749,13 +749,14 @@ function renderMissedRuns(r) {
     const kindBadge = `<span class="badge-kind kind-${kind}">${kind}</span>`;
 
     // Errored AND not wired into the watchdog = a prime candidate to start
-    // watching. Flag visibly and offer a one-click Wire button.
+    // watching. Flag visibly and offer a one-click Wire button below.
+    // Skipped rows aren't really "failures" so we don't push wiring on them.
     const unwiredFlag = (kind === "errored" && row.wired_to_watchdog === false)
       ? ` <span class="badge-kind kind-unwired" title="This cron is erroring but isn't wired into the retry-watchdog. Click Wire to start tracking it.">not watched</span>`
       : "";
 
     let whatCol;
-    if (kind === "errored" && row.matched_run_iso) {
+    if ((kind === "errored" || kind === "skipped") && row.matched_run_iso) {
       whatCol = `${kindBadge}${unwiredFlag} <small>at ${fmtDate(row.matched_run_iso)} <span class="muted">(${escapeHtml(row.matched_run_status || "?")})</span></small>`;
     } else if (row.last_actual_run_iso) {
       whatCol = `${kindBadge}${unwiredFlag} <small class="muted">last successful run: ${fmtDate(row.last_actual_run_iso)} (${escapeHtml(row.last_actual_run_status || "?")})</small>`;
