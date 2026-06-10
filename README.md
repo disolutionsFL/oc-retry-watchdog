@@ -12,7 +12,7 @@ OpenClaw's built-in cron scheduler supports failure alerting via webhook but doe
 
 The watchdog provides all three on top of OpenClaw's existing infrastructure, with a JSON HTTP API, a single-page Web UI, and zero non-stdlib Python dependencies.
 
-> **Current version:** v0.7.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6), **missed-and-failed cron run detection with `jobs.json`-direct read + Fire/Wire one-click actions, and a collapsible all-schedules panel (v0.7)**.
+> **Current version:** v0.8.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6), missed-and-failed cron run detection with `jobs.json`-direct read + Fire/Wire one-click actions and a collapsible all-schedules panel (v0.7), **per-row Explain on the missed/failed panel that combines AI failure-mode diagnosis, live healthcheck (dependency) state, and a derived re-fire recommendation (v0.8)**.
 
 ## Architecture
 
@@ -256,6 +256,28 @@ The panel defaults to **today** but accepts any date via the picker — useful f
 #### Errored-but-unwired surfacing (the "you should wire this" hint)
 
 When the panel sees a cron erroring on a fire time, AND that cron's failure-alert webhook is NOT pointed at this watchdog, the row gets a `not watched` badge and an extra **Wire** button. One click wires the cron to the watchdog so future failures get tracked and retried per the configured policy. This was added because the dashboard owner shouldn't have to find out manually that a cron has been silently failing — if it shows up errored here, the watchdog should offer the path to start watching it.
+
+#### Per-row Explain (v0.8)
+
+Every row in the missed/failed panel gets an **Explain** button that opens a modal combining three signals:
+
+1. **AI failure-mode diagnosis** — for errored rows, runs the actual run record's error/summary text through the AI explainer (same path as alert-time enrichment from v0.6). Returns cause + next-step + confidence + category, same schema. For missed rows (no run record), the modal returns a structured "AI can't diagnose silence" note with the common categories of cause (host down, gateway down, schedule recently changed, etc.) so the operator has a checklist to investigate.
+
+2. **Dependencies** — every healthcheck configured for the cron is evaluated *now* and rendered with its current pass/fail state and the predicate's actual message. If no healthchecks are configured, the modal explicitly nudges that adding them gates retries on dependency state.
+
+3. **Re-fire recommendation** — derived from the AI category, *adjusted by* current healthcheck state. The category-to-advice mapping looks like this:
+
+| AI category | Default advice | Override if any healthcheck is failing |
+|---|---|---|
+| `model` | Re-fire now — model-side errors are usually transient | Don't re-fire; fix dependency first |
+| `network` | Verify upstream reachable, then re-fire | Don't re-fire; fix dependency first |
+| `config` | Don't re-fire — config issue will repeat | Same |
+| `data` | Inspect input data first | Same |
+| `code` | Don't re-fire — needs deploy or workaround | Same |
+| `dependency` | Wait for recovery, then re-fire | Same; the failing healthcheck IS the dependency |
+| `unknown` | Review + decide | Don't re-fire if any healthcheck is failing |
+
+A failing healthcheck *always* overrides the AI's category-derived advice to "fix dependency first," because a known-failing dependency is more authoritative than a model's guess at what went wrong.
 
 ### 7. All cron schedules panel (v0.7)
 
@@ -624,6 +646,7 @@ All endpoints return JSON.
 | POST | `/api/openclaw-jobs/<id>/unwire` | Run `openclaw cron edit --no-failure-alert` |
 | GET | `/api/missed-runs?day=YYYY-MM-DD&grace_minutes=N` | List missed/errored expected fires for the given day (default today). Each entry carries `kind` (`missed` \| `errored`), `wired_to_watchdog`, and matched-run metadata. |
 | POST | `/api/missed-runs/<cron_id>/fire` | One-shot manual catch-up. Calls `openclaw cron run <cron_id>`. NOT tracked as a retry event. |
+| POST | `/api/missed-runs/<cron_id>/explain` | Body: `{"expected_at_ms": <int>, "grace_minutes": <int>}`. Returns AI diagnosis + live healthcheck states + a re-fire recommendation. Used by the Explain button. |
 | GET | `/api/cron-schedules` | All crons from `jobs.json` annotated with today's expected fires, next fire (7-day lookahead), last actual run, wired-to-watchdog status. Used by the All Cron Schedules panel. |
 
 ## Security

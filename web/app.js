@@ -765,8 +765,10 @@ function renderMissedRuns(r) {
 
     // Action buttons: Fire always, plus Wire on errored+unwired so the
     // operator can promote a previously-untracked cron into the watchdog
-    // with one click.
-    let actions = `<button class="btn-mini primary" data-action="fire-missed" data-id="${row.cron_id}" title="openclaw cron run ${escapeAttr(row.cron_id)}">Fire</button>`;
+    // with one click, plus Explain on every row (AI diagnosis + dep
+    // states for errored, structured "no run" guidance for missed).
+    let actions = `<button class="btn-mini" data-action="explain-missed" data-id="${row.cron_id}" data-expected-ms="${row.expected_at_ms || ''}" title="AI diagnosis + dependency state + re-fire recommendation">Explain</button>`;
+    actions += ` <button class="btn-mini primary" data-action="fire-missed" data-id="${row.cron_id}" title="openclaw cron run ${escapeAttr(row.cron_id)}">Fire</button>`;
     if (kind === "errored" && row.wired_to_watchdog === false) {
       actions += ` <button class="btn-mini success" data-action="wire-missed" data-id="${row.cron_id}" title="Wire this cron's failure-alert webhook to this watchdog so future errors are tracked and retried.">Wire</button>`;
     }
@@ -1128,6 +1130,118 @@ $("#hb-scan-now").addEventListener("click", async () => {
 $("#missed-day").addEventListener("change", loadMissedRuns);
 $("#missed-refresh").addEventListener("click", loadMissedRuns);
 
+// ----- Explain modal for missed/failed cron runs ----
+
+async function openMissedRunExplainModal(cronId, expectedAtMs) {
+  $("#explain-modal-event").textContent = `expected ${fmtDate(new Date(expectedAtMs).toISOString())}`;
+  $("#explain-modal-body").innerHTML = `<p class="explain-loading">Looking up run record and asking AI&hellip;</p>`;
+  $("#explain-regenerate-btn").classList.add("hidden");
+  $("#explain-modal").showModal();
+  try {
+    const r = await api("POST", `/api/missed-runs/${cronId}/explain`,
+                        { expected_at_ms: expectedAtMs });
+    renderMissedRunExplanation(r);
+  } catch (e) {
+    $("#explain-modal-body").innerHTML =
+      `<p class="bad">Request failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderMissedRunExplanation(r) {
+  // r: {ok, kind, cron, matched_run, ai, ai_error, ai_model_used,
+  //     healthchecks, healthchecks_configured, suggested_action}
+  const parts = [];
+
+  // Header: cron + classification
+  const kindBadge = `<span class="badge-kind kind-${r.kind}">${escapeHtml(r.kind)}</span>`;
+  parts.push(`
+    <div class="explain-section">
+      <h4>${escapeHtml(r.cron.name || r.cron.cron_id)} ${kindBadge}</h4>
+      <p class="hint" style="margin:0;"><code>${escapeHtml(r.cron.schedule)}</code> &middot; agent <strong>${escapeHtml(r.cron.agent)}</strong></p>
+    </div>
+  `);
+
+  // AI diagnosis or note explaining why it's not available
+  if (r.ai) {
+    const conf = (r.ai.confidence || "low").toLowerCase();
+    const cat = (r.ai.category || "unknown").toLowerCase();
+    parts.push(`
+      <div class="explain-section">
+        <h4>Likely cause</h4>
+        <p>${escapeHtml(r.ai.cause || "(none)")}</p>
+      </div>
+      <div class="explain-section">
+        <h4>Suggested next step</h4>
+        <p>${escapeHtml(r.ai.next_step || "(none)")}</p>
+      </div>
+      <div class="explain-meta">
+        <span class="explain-badge explain-conf-${conf}">confidence: ${escapeHtml(conf)}</span>
+        <span class="explain-badge explain-cat-${cat}">category: ${escapeHtml(cat)}</span>
+        ${r.ai_model_used ? `<span class="explain-badge explain-model">via ${escapeHtml(r.ai_model_used)}</span>` : ""}
+      </div>
+    `);
+  } else {
+    parts.push(`
+      <div class="explain-unavail">
+        <strong>AI diagnosis unavailable.</strong>
+        <p>${escapeHtml(r.ai_error || "(no diagnosis)")}</p>
+      </div>
+    `);
+  }
+
+  // Re-fire recommendation
+  if (r.suggested_action) {
+    parts.push(`
+      <div class="explain-section explain-refire">
+        <h4>Should it be re-fired?</h4>
+        <p>${escapeHtml(r.suggested_action)}</p>
+      </div>
+    `);
+  }
+
+  // Healthcheck states (dependencies)
+  if (r.healthchecks_configured > 0) {
+    const hcRows = r.healthchecks.map(hc => {
+      const stateBadge = hc.ok
+        ? `<span class="badge-kind kind-succeeded">pass</span>`
+        : `<span class="badge-kind kind-errored">fail</span>`;
+      return `
+        <li class="hc-row hc-${hc.ok ? "ok" : "fail"}">
+          ${stateBadge}
+          <strong>${escapeHtml(hc.description || hc.type)}</strong>
+          <small class="muted">(${escapeHtml(hc.type)})</small>
+          ${hc.message ? `<div class="hc-msg"><small>${escapeHtml(hc.message)}</small></div>` : ""}
+        </li>
+      `;
+    }).join("");
+    parts.push(`
+      <div class="explain-section">
+        <h4>Dependencies (configured healthchecks, current state)</h4>
+        <ul class="hc-list">${hcRows}</ul>
+      </div>
+    `);
+  } else {
+    parts.push(`
+      <div class="explain-section explain-hc-empty">
+        <h4>Dependencies</h4>
+        <p class="hint">No healthchecks configured for this cron. If this cron has external dependencies (a model endpoint, an upstream API, a downstream file), adding healthchecks gates retries on dependency state and prevents pointless retries during an outage.</p>
+      </div>
+    `);
+  }
+
+  // Matched-run summary (for errored case)
+  if (r.matched_run) {
+    parts.push(`
+      <div class="explain-section">
+        <h4>Run record at ${fmtDate(r.matched_run.ts_iso)} <small class="muted">(status: ${escapeHtml(r.matched_run.status || "?")})</small></h4>
+        <pre class="run-summary">${escapeHtml(r.matched_run.summary_excerpt || "(no summary)")}</pre>
+      </div>
+    `);
+  }
+
+  $("#explain-modal-body").innerHTML = parts.join("");
+}
+
 // ----- All cron schedules panel -----
 
 const SCHED_AGENT_FILTER_KEY = "oc-retry-watchdog-sched-agent-filter";
@@ -1249,9 +1363,20 @@ $("#schedules-panel").addEventListener("toggle", () => {
 document.addEventListener("click", async (e) => {
   const fireBtn = e.target.closest("[data-action='fire-missed']");
   const wireBtn = e.target.closest("[data-action='wire-missed']");
-  if (!fireBtn && !wireBtn) return;
-  const t = fireBtn || wireBtn;
+  const explainBtn = e.target.closest("[data-action='explain-missed']");
+  if (!fireBtn && !wireBtn && !explainBtn) return;
+  const t = fireBtn || wireBtn || explainBtn;
   const cronId = t.dataset.id;
+
+  if (explainBtn) {
+    const expectedMs = parseInt(explainBtn.dataset.expectedMs, 10);
+    if (!expectedMs) {
+      toast("missing expected_at_ms on the row -- refresh and retry", "bad");
+      return;
+    }
+    openMissedRunExplainModal(cronId, expectedMs);
+    return;
+  }
 
   if (fireBtn) {
     if (!await appConfirm({

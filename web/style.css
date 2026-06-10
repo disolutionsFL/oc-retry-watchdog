@@ -875,6 +875,25 @@ tr.missed-parse-error { background: rgba(201,122,0,0.05); }
 .kind-missed   { background: var(--bg-pill);            color: var(--muted); }
 .kind-errored  { background: rgba(178,28,28,0.18);      color: var(--bad); }
 .kind-unwired  { background: rgba(201,122,0,0.18);      color: var(--warn); }
+.kind-succeeded { background: rgba(46,125,50,0.18);     color: var(--good); }
+
+/* Missed-run explain modal extra sections */
+.explain-refire { background: rgba(74,108,191,0.06); padding: 8px 10px; border-radius: 4px; }
+.hc-list { margin: 4px 0 0; padding: 0; list-style: none; }
+.hc-row {
+  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.hc-row:last-child { border-bottom: none; }
+.hc-msg { width: 100%; padding-left: 24px; }
+.hc-msg small { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+pre.run-summary {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  background: var(--bg-pill); padding: 8px 10px; border-radius: 3px;
+  max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  margin: 4px 0 0; color: var(--fg);
+}
+.explain-hc-empty p { margin: 0; }
 
 @media (max-width: 700px) {
   .missed-header { gap: 8px; }

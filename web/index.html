@@ -142,7 +142,7 @@
       </div>
     </details>
 
-    <p class="hint">v0.7.0 &mdash; missed/failed cron run detection lives in the dashboard with a date picker for history review. Picks up any cron in <code>jobs.json</code> regardless of retry-watchdog wiring, and surfaces errored unwatched crons as candidates to wire. Plus a collapsible all-schedules panel for the full agent-by-agent view.</p>
+    <p class="hint">v0.8.0 &mdash; per-row Explain on the missed/failed cron panel now opens AI diagnosis + current healthcheck (dependency) states + a re-fire recommendation derived from the AI category and healthcheck status. Missed rows (no run record) get structured "no data" guidance; errored rows get the full AI cause/next-step + dependency surface.</p>
   </main>
 
   <dialog id="settings-modal">

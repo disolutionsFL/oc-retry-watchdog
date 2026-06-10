@@ -12,6 +12,8 @@ v0.5 — healthcheck framework with pre-retry enforcement + AI-assisted suggesti
 v0.6 — failure-mode explanations: AI diagnosis on alert emails + on-demand UI button.
 v0.7 — missed/failed cron run detection (jobs.json direct read, Fire/Wire one-click)
        + collapsible all-schedules panel with agent filter. Stdlib cron parser.
+v0.8 — explain-missed-run: AI diagnosis + live healthcheck states + refire
+       recommendation for each row in the missed/failed panel.
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
@@ -43,7 +45,7 @@ import ai as ai_mod
 import predicates as predicates_mod
 import missed_runs as missed_runs_mod
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -645,6 +647,228 @@ class Watchdog:
             "now_iso": now.isoformat(),
             "today": today_start.date().isoformat(),
             "schedules": out,
+        }
+
+    def _evaluate_all_healthchecks(self, cron_id: str) -> list[dict]:
+        """Evaluate every healthcheck for this cron and return per-check state.
+
+        Unlike `_evaluate_healthchecks`, this does NOT short-circuit on the
+        first failure — used by the missed-run Explain modal so the operator
+        sees every dependency's current state at a glance.
+
+        Returns a list of {index, type, description, ok, message}.
+        Empty list if no healthchecks are configured for the cron.
+        """
+        hcs = (self.cfg.get("healthchecks") or {}).get(cron_id) or []
+        if not isinstance(hcs, list) or not hcs:
+            return []
+        tz_name = self.cfg["server"]["timezone"]
+        out = []
+        for i, hc in enumerate(hcs):
+            entry = {
+                "index": i,
+                "type": hc.get("type", "?"),
+                "description": hc.get("description", ""),
+                "ok": False,
+                "message": "",
+            }
+            try:
+                ok, msg = predicates_mod.evaluate(
+                    hc,
+                    tz_name=tz_name,
+                    state_get=lambda key, cid=cron_id, idx=i:
+                        self._healthcheck_state.get((cid, idx)),
+                    state_set=lambda key, val, cid=cron_id, idx=i:
+                        self._healthcheck_state.__setitem__((cid, idx), val),
+                )
+                entry["ok"] = bool(ok)
+                entry["message"] = msg
+            except Exception as e:
+                entry["ok"] = False
+                entry["message"] = f"{type(e).__name__}: {e}"
+            out.append(entry)
+        return out
+
+    def explain_missed_run(self, cron_id: str, expected_at_ms: int,
+                           grace_minutes: int = 5) -> dict:
+        """Explain one row in the Missed & failed cron runs panel.
+
+        Reads cron metadata from jobs.json, looks for an actual run record
+        within +/- grace_minutes of expected_at. If a run is found and at
+        least one of them errored (kind=errored case), feeds the error /
+        summary into the AI failure-mode diagnoser. If no run is found
+        (kind=missed case), returns a structured no-data explanation.
+
+        Also evaluates the cron's currently-configured healthchecks so the
+        operator sees dependency state at the same time. Empty list if no
+        healthchecks are configured for this cron.
+
+        Returns:
+          {
+            ok:                True iff AI produced a diagnosis.
+            kind:              "missed" | "errored"
+            cron:              {cron_id, name, agent, schedule}
+            matched_run:       {ts_iso, status, summary_excerpt} | None
+            ai:                {cause, next_step, confidence, category} | None
+            ai_error:          str (empty if ok)
+            ai_model_used:     str | None
+            healthchecks:      [{description, ok, message}, ...]
+            healthchecks_configured: int
+            suggested_action:  Derived recommendation string.
+          }
+        """
+        jobs_path = self.cfg["heartbeat"]["jobs_json_path"]
+        runs_dir = self.cfg["heartbeat"]["runs_dir_path"]
+
+        # Look up the cron metadata in jobs.json.
+        job = next(
+            (j for j in oc.read_jobs_with_alerts(jobs_path)
+             if j.get("cron_id") == cron_id),
+            None,
+        )
+        if not job:
+            raise RuntimeError(f"cron {cron_id!r} not found in jobs.json")
+
+        cron = {
+            "cron_id": cron_id,
+            "name": job.get("name") or cron_id,
+            "agent": job.get("agent") or "?",
+            "schedule": job.get("schedule") or "?",
+            "max_retries": 0,    # unused but _try_explain_failure may read it
+        }
+
+        # Find runs in the +/- grace window around expected_at.
+        grace_ms = grace_minutes * 60 * 1000
+        lo = expected_at_ms - grace_ms
+        hi = expected_at_ms + grace_ms
+        window_runs = oc.all_runs_for(cron_id, runs_dir, lo, hi + 1)
+
+        # Decide kind from the same rules the panel uses.
+        ok_run = next(
+            (r for r in window_runs
+             if (r.get("status") or "").lower() == "ok"),
+            None,
+        )
+        if ok_run is not None:
+            # The row shouldn't have been in the panel at all — but if the
+            # operator clicked Explain anyway, tell them it succeeded.
+            kind = "succeeded"
+            matched = ok_run
+        elif window_runs:
+            kind = "errored"
+            matched = window_runs[-1]
+        else:
+            kind = "missed"
+            matched = None
+
+        matched_block = None
+        if matched is not None:
+            m_ts = matched.get("ts")
+            ts_iso = None
+            if isinstance(m_ts, (int, float)):
+                ts_iso = datetime.fromtimestamp(
+                    m_ts / 1000, tz=ZoneInfo(self.cfg["server"]["timezone"])
+                ).isoformat()
+            summary = matched.get("summary") or ""
+            if len(summary) > 1500:
+                summary = "...(truncated)...\n" + summary[-1500:]
+            matched_block = {
+                "ts_iso": ts_iso,
+                "status": matched.get("status"),
+                "summary_excerpt": summary,
+            }
+
+        # Evaluate healthchecks now -- whether or not we have an AI call to make.
+        hc_results = self._evaluate_all_healthchecks(cron_id)
+        hc_configured = len(hc_results)
+
+        ai_diag = None
+        ai_err = ""
+        ai_model_used = None
+        suggested_action = ""
+
+        if kind == "errored":
+            error_text = (matched.get("summary")
+                          if matched and isinstance(matched.get("summary"), str)
+                          else "(no run summary recorded)")
+            ai_diag, ai_err, ai_model_used = self._try_explain_failure(
+                cron=cron,
+                error=error_text,
+                failure_source="missed-runs-panel",
+                retry_history=[],
+                run_log_excerpt=error_text,
+            )
+        elif kind == "missed":
+            ai_err = ("no run record exists in the window; AI diagnosis is "
+                      "not meaningful for missed fires. Common causes: the "
+                      "OpenClaw gateway or its host was not running at the "
+                      "expected time; the cron schedule has a recently-"
+                      "changed expression; the cron was disabled and re-"
+                      "enabled mid-day. Check the gateway journal around "
+                      "the expected fire time.")
+        elif kind == "succeeded":
+            ai_err = ("a status=ok run exists in this window; the panel "
+                      "should have filtered it out. Refresh to re-check.")
+
+        # Derive a re-fire recommendation from the AI category (when present),
+        # adjusted by current healthcheck state.
+        if kind == "missed":
+            suggested_action = (
+                "Manual catch-up: click Fire to run `openclaw cron run "
+                "<id>` once. If the host or gateway was down at the expected "
+                "time and is up now, this should succeed on the first try."
+            )
+        elif kind == "succeeded":
+            suggested_action = "Already succeeded -- no action needed."
+        elif ai_diag and ai_diag.get("category"):
+            cat = (ai_diag.get("category") or "").lower()
+            cat_advice = {
+                "model":     "Re-fire now -- model-side errors are usually transient. If it errors again with the same category, the model is genuinely unhealthy and a retry won't help until it recovers.",
+                "network":   "Verify the upstream service is reachable, then re-fire.",
+                "config":    "Do NOT re-fire yet -- a config issue will repeat. Fix the config (or wire/adjust the relevant healthcheck) before retrying.",
+                "data":      "Inspect the input data before re-firing -- a repeat run is likely to hit the same error if the data is bad.",
+                "code":      "Do NOT re-fire yet -- a code-level issue needs a deploy or workaround. Re-firing will just repeat the error.",
+                "dependency":"Wait for the dependency to recover (check healthcheck state below), then re-fire. Re-firing now will likely fail the same way.",
+                "unknown":   "Review the AI diagnosis below and the healthcheck state, then decide. When in doubt, re-fire once -- many errors are transient.",
+            }
+            suggested_action = cat_advice.get(cat, cat_advice["unknown"])
+            # If healthchecks are configured and any are failing, take that
+            # information over the AI category — a known-failing dependency
+            # is more authoritative than a model's guess.
+            if hc_results and any(not h["ok"] for h in hc_results):
+                failed_names = ", ".join(
+                    (h["description"] or h["type"]) for h in hc_results if not h["ok"]
+                )
+                suggested_action = (
+                    f"DO NOT re-fire yet. {len(hc_results) - sum(1 for h in hc_results if h['ok'])} "
+                    f"healthcheck(s) currently FAILING: {failed_names}. Fix the dependency "
+                    f"first, then re-fire. (AI also suggests: {suggested_action})"
+                )
+        else:
+            # AI errored or disabled. Generic advice.
+            if hc_results and any(not h["ok"] for h in hc_results):
+                suggested_action = (
+                    "One or more healthchecks are FAILING (see below). Fix the "
+                    "dependency first, then re-fire."
+                )
+            else:
+                suggested_action = (
+                    "AI diagnosis unavailable. Inspect the run summary below "
+                    "and decide based on the visible error. If healthchecks "
+                    "pass and the error looks transient, re-fire once."
+                )
+
+        return {
+            "ok": ai_diag is not None,
+            "kind": kind,
+            "cron": cron,
+            "matched_run": matched_block,
+            "ai": ai_diag,
+            "ai_error": ai_err,
+            "ai_model_used": ai_model_used,
+            "healthchecks": hc_results,
+            "healthchecks_configured": hc_configured,
+            "suggested_action": suggested_action,
         }
 
     def fire_cron_now(self, cron_id: str) -> dict:
@@ -1407,6 +1631,35 @@ class Handler(BaseHTTPRequestHandler):
             cron_id = m[3]
             result = WATCHDOG.fire_cron_now(cron_id)
             self._send_json(200 if result.get("ok") else 500, result)
+            return
+
+        # POST /api/missed-runs/<cron_id>/explain
+        # Body: {"expected_at_ms": <int>, "grace_minutes": <int>}
+        # Returns AI failure-mode diagnosis + healthcheck states + a
+        # suggested action for whether to re-fire.
+        if (len(m) >= 5 and m[1] == "api" and m[2] == "missed-runs"
+                and m[4] == "explain"):
+            cron_id = m[3]
+            if not isinstance(body, dict):
+                self._send_json(400, {"ok": False,
+                                      "error": "expected JSON object"})
+                return
+            expected = body.get("expected_at_ms")
+            if not isinstance(expected, (int, float)):
+                self._send_json(400, {"ok": False,
+                                      "error": "expected_at_ms (number) is required"})
+                return
+            grace = body.get("grace_minutes")
+            grace_int = 5
+            if isinstance(grace, (int, float)):
+                grace_int = max(0, int(grace))
+            try:
+                result = WATCHDOG.explain_missed_run(
+                    cron_id, int(expected), grace_minutes=grace_int)
+            except RuntimeError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, result)
             return
 
         self._send_text(404, "Not found")
