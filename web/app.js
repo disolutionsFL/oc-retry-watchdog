@@ -1286,6 +1286,25 @@ function renderSchedulesAgentFilter() {
   }).join("") + ` <button class="btn-link" style="font-size:11px;" id="sched-filter-reset">Show all</button>`;
 }
 
+function renderTodayFiresBreakdown(s, todayCount) {
+  // Inline per-status mini-breakdown in the Today's Fires column.
+  // Reuses the same .badge-kind palette as the missed-runs panel so
+  // colors mean the same thing across the dashboard. Hover the count
+  // for the full fire-time list (existing behavior).
+  const b = s.today_fires_breakdown || {};
+  const fireTitles = (s.today_fires || []).map(fmtDate).join('\n');
+  const pieces = [];
+  if (b.ok)       pieces.push(`<span class="badge-kind kind-succeeded" title="${b.ok} successful">${b.ok} ok</span>`);
+  if (b.error)    pieces.push(`<span class="badge-kind kind-errored"   title="${b.error} errored">${b.error} err</span>`);
+  if (b.skipped)  pieces.push(`<span class="badge-kind kind-skipped"   title="${b.skipped} skipped">${b.skipped} skip</span>`);
+  if (b.missed)   pieces.push(`<span class="badge-kind kind-missed"    title="${b.missed} missed">${b.missed} miss</span>`);
+  if (b.running)  pieces.push(`<span class="badge-kind kind-unwired"   title="${b.running} still within timeout">${b.running} run</span>`);
+  if (b.upcoming) pieces.push(`<span class="badge-kind kind-neutral"   title="${b.upcoming} upcoming">${b.upcoming} up</span>`);
+  const total = `<span class="fires-count" title="${escapeAttr(fireTitles)}">${todayCount}</span>`;
+  if (!pieces.length) return total;
+  return `${total} <span class="fires-breakdown">${pieces.join(" ")}</span>`;
+}
+
 function renderSchedulesTable() {
   const tbody = $("#schedules-tbody");
   let rows = schedState.schedules.slice();
@@ -1311,7 +1330,7 @@ function renderSchedulesTable() {
       ? `<small class="bad" title="${escapeAttr(s.schedule_parse_error)}">parse error</small>`
       : todayCount === 0
         ? `<small class="muted">0</small>`
-        : `<span title="${escapeAttr((s.today_fires || []).map(fmtDate).join('\n'))}">${todayCount}</span>`;
+        : renderTodayFiresBreakdown(s, todayCount);
     const nextFire = s.next_fire_iso ? fmtDate(s.next_fire_iso) : `<span class="muted">—</span>`;
     const lastRun = s.last_actual_run_iso
       ? `${fmtDate(s.last_actual_run_iso)} <small class="muted">(${escapeHtml(s.last_actual_run_status || "?")})</small>`

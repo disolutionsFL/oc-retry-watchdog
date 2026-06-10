@@ -18,6 +18,11 @@ v0.8.1 — correctness: match expected fires to runs by `runAtMs` instead of
        a +/- ts grace window. Adds "skipped" status. Uses the cron's
        configured timeoutSeconds (from openclaw.json agents.defaults)
        to distinguish "still running" from "missed".
+v0.8.2 — interval-based matcher. `runAtMs` turned out to be actual
+       run-start time (drifts by queue delay), not the scheduled fire
+       time. Each fire now owns `[E - lead_tol, next_E)` -- or for the
+       final fire, `[E - lead_tol, E + timeout + cushion]`. Schedules
+       panel gains `today_fires_breakdown` with per-status counts.
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
@@ -49,7 +54,7 @@ import ai as ai_mod
 import predicates as predicates_mod
 import missed_runs as missed_runs_mod
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -586,6 +591,11 @@ class Watchdog:
         """Return every cron in jobs.json with computed today's fires +
         next fire time, organized for the schedule-view panel.
 
+        Each cron also gets a `today_fires_breakdown` with per-status
+        counts (ok / error / skipped / missed / running / upcoming),
+        computed by matching today's scheduled fires to actual run
+        records using the same algorithm as the missed-runs panel.
+
         Reads jobs.json fresh on every call -- this is intentionally
         real-time so it reflects schedule changes immediately.
         """
@@ -600,12 +610,15 @@ class Watchdog:
 
         expected_url = self._expected_webhook_url()
         runs_dir = self.cfg["heartbeat"]["runs_dir_path"]
+        oc_cfg_path = (self.cfg.get("ai") or {}).get(
+            "openclaw_config_path", "~/.openclaw/openclaw.json")
         out = []
         for j in oc.read_jobs_with_alerts(self.cfg["heartbeat"]["jobs_json_path"]):
             cron_id = j.get("cron_id")
             schedule_expr = (j.get("schedule") or "").strip()
             tz_for_cron = j.get("timezone") or tz_name
 
+            today_fires: list = []
             today_fires_iso: list[str] = []
             next_fire_iso: str | None = None
             parse_error: str | None = None
@@ -621,6 +634,27 @@ class Watchdog:
                     next_fire_iso = future[0].isoformat()
             except (ValueError, KeyError) as e:
                 parse_error = str(e)
+
+            # Today's fires breakdown: classify each scheduled fire by
+            # status (ok/error/skipped/missed/running/upcoming) by matching
+            # against actual run records. Shares the matcher with
+            # find_missed so the two panels agree.
+            breakdown = {"ok": 0, "error": 0, "skipped": 0,
+                         "missed": 0, "running": 0, "upcoming": 0}
+            if today_fires and cron_id:
+                fires_sorted = sorted(today_fires)
+                timeout_sec = missed_runs_mod.get_agent_timeout(
+                    oc_cfg_path, j.get("agent"))
+                runs_since_ms = int((fires_sorted[0] - timedelta(seconds=120)).timestamp() * 1000)
+                runs_until_ms = int((fires_sorted[-1] + timedelta(
+                    seconds=timeout_sec + 600 + 60)).timestamp() * 1000)
+                runs = oc.all_runs_for(cron_id, runs_dir, runs_since_ms, runs_until_ms)
+                runs_with_runat = sorted(
+                    (r for r in runs if isinstance(r.get("runAtMs"), (int, float))),
+                    key=lambda r: r["runAtMs"],
+                )
+                breakdown = missed_runs_mod.classify_fires(
+                    fires_sorted, runs_with_runat, timeout_sec, now)
 
             # Last actual run time (if any)
             last_actual_iso = None
@@ -647,6 +681,7 @@ class Watchdog:
                 "enabled": bool(j.get("enabled")),
                 "today_fires": today_fires_iso,
                 "today_fire_count": len(today_fires_iso),
+                "today_fires_breakdown": breakdown,
                 "next_fire_iso": next_fire_iso,
                 "last_actual_run_iso": last_actual_iso,
                 "last_actual_run_status": last_actual_status,
@@ -748,22 +783,32 @@ class Watchdog:
             "max_retries": 0,    # unused but _try_explain_failure may read it
         }
 
-        # Look for the run record whose runAtMs is within tolerance of
-        # the expected fire time. Same authoritative match used by the
-        # panel itself (find_missed).
-        tol_ms = match_tolerance_seconds * 1000
+        # Find the run record claimed by this expected fire, using the
+        # same interval matcher as the panel (find_missed). The fire
+        # owns `[E - lead_tol, E + timeout + cushion]` -- we don't have
+        # a "next fire" here so we just bound by the cron's timeout.
+        oc_cfg_path = (self.cfg.get("ai") or {}).get(
+            "openclaw_config_path", "~/.openclaw/openclaw.json")
+        timeout_sec = missed_runs_mod.get_agent_timeout(
+            oc_cfg_path, job.get("agent"))
         # Fetch a generous window of records around the expected fire
         # (filtered by ts here; matched by runAtMs below).
         lo = expected_at_ms - 3600_000     # 1h before
-        hi = expected_at_ms + 4 * 3600_000  # 4h after
+        hi = expected_at_ms + (timeout_sec + 600) * 1000 + 3600_000
         candidate_runs = oc.all_runs_for(cron_id, runs_dir, lo, hi)
-
-        matched = None
-        for r in candidate_runs:
-            rA = r.get("runAtMs")
-            if isinstance(rA, (int, float)) and abs(rA - expected_at_ms) <= tol_ms:
-                matched = r
-                break
+        runs_with_runat = sorted(
+            (r for r in candidate_runs
+             if isinstance(r.get("runAtMs"), (int, float))),
+            key=lambda r: r["runAtMs"],
+        )
+        # Single-fire match: use the same helper so semantics stay aligned.
+        expected_dt = datetime.fromtimestamp(
+            expected_at_ms / 1000,
+            tz=ZoneInfo(self.cfg["server"]["timezone"]))
+        matches = missed_runs_mod.assign_runs_to_fires(
+            [expected_dt], runs_with_runat, timeout_sec,
+            lead_tol_sec=max(match_tolerance_seconds, 60))
+        matched = matches[0]
 
         if matched is None:
             kind = "missed"

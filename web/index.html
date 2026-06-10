@@ -96,7 +96,7 @@
         </label>
         <button id="missed-refresh" class="btn-link">Refresh</button>
       </div>
-      <p class="hint missed-hint">Reads <code>jobs.json</code> + <code>cron/runs/&lt;id&gt;.jsonl</code> directly. Matches each expected fire to its run record by the run's <code>runAtMs</code> field (the scheduled fire time OpenClaw itself records), then classifies by the <code>status</code> field: <span class="badge-kind kind-errored">errored</span>, <span class="badge-kind kind-skipped">skipped</span>, or <span class="badge-kind kind-missed">missed</span> (no record AND past the cron's configured timeout). Successful (<code>status=ok</code>) and still-running fires are not shown. Crons do not need to be wired into the watchdog to appear here. The per-row <strong>Fire</strong> button calls <code>openclaw cron run &lt;id&gt;</code> as a manual catch-up.</p>
+      <p class="hint missed-hint">Reads <code>jobs.json</code> + <code>cron/runs/&lt;id&gt;.jsonl</code> directly. Each scheduled fire owns the time window from that fire to the next one (or to the cron's configured timeout for the final fire of the window). Any actual run whose start falls in that window is matched and classified by its <code>status</code>: <span class="badge-kind kind-errored">errored</span>, <span class="badge-kind kind-skipped">skipped</span>. A fire with no matching run past timeout is <span class="badge-kind kind-missed">missed</span>. Successful (<code>status=ok</code>) and still-running fires are not shown. Crons do not need to be wired into the watchdog to appear here. The per-row <strong>Fire</strong> button calls <code>openclaw cron run &lt;id&gt;</code> as a manual catch-up.</p>
       <div class="table-scroll missed-table-wrap">
         <table id="missed-table">
           <thead>
@@ -142,7 +142,7 @@
       </div>
     </details>
 
-    <p class="hint">v0.8.0 &mdash; per-row Explain on the missed/failed cron panel now opens AI diagnosis + current healthcheck (dependency) states + a re-fire recommendation derived from the AI category and healthcheck status. Missed rows (no run record) get structured "no data" guidance; errored rows get the full AI cause/next-step + dependency surface.</p>
+    <p class="hint">v0.8.2 &mdash; interval-based fire-to-run matcher (each scheduled fire owns the time window from itself to the next fire or to its configured timeout, accommodating real-world scheduler queue delay). The schedules panel's <strong>Today's Fires</strong> column now breaks out per-status counts (<span class="badge-kind kind-succeeded">ok</span>, <span class="badge-kind kind-errored">err</span>, <span class="badge-kind kind-skipped">skip</span>, <span class="badge-kind kind-missed">miss</span>, <span class="badge-kind kind-unwired">run</span>) using the same matcher as the missed/failed panel.</p>
   </main>
 
   <dialog id="settings-modal">

@@ -3,43 +3,57 @@
 Reads OpenClaw's `cron/jobs.json` to enumerate enabled crons + their
 schedules, computes expected fire times in a window via cron_parser,
 and matches each expected fire to a `cron/runs/<id>.jsonl` record
-using the run record's `runAtMs` field — which is the scheduled fire
-time as recorded by OpenClaw itself, NOT the finish time. This is the
-authoritative source; we don't approximate via timestamp grace windows.
+using the run record's `runAtMs` field as the actual run-start
+timestamp + the run's `status` field for classification.
 
 Schema notes (verified against C3PO production records 2026-06-10):
 
   Each `finished` record has:
     ts          finish time (ms since epoch)
-    runAtMs     scheduled fire time (ms since epoch) -- the key we match on
+    runAtMs     ACTUAL RUN-START time the scheduler dispatched the run
+                (ms since epoch). NOT the schedule's mathematical fire
+                time -- runs queue, so a 10:00 cron that the scheduler
+                couldn't pick up until 10:04:52 has runAtMs ~ 10:04:52.
     status      "ok" | "error" | "skipped"
     error       error text (status="error") or reason (status="skipped"
                 e.g. "disabled")
     summary     agent-written summary on success/error
-    durationMs  ts - runAtMs (effectively)
+    durationMs  ts - runAtMs
 
-A cron scheduled for 10:00 that takes 5 minutes has runAtMs ~ 10:00:00
-and ts ~ 10:05:00. Matching on runAtMs makes "duration delta" irrelevant.
+Matching algorithm: each scheduled fire E "owns" the half-open interval
+`[E - lead_tolerance, next_E)` -- or for the final fire in our window,
+`[E - lead_tolerance, E + timeout_ms + queue_cushion]`. Any finished
+run whose `runAtMs` falls in that interval is the run for E. Runs are
+walked in `runAtMs` ascending order alongside fires (also ascending), so
+each run is claimed at most once (sliding pointer, O(n+m)).
 
 For each expected fire one of FOUR things is true:
 
-  * A matching record exists with status="ok"      -> skipped (success)
-  * A matching record exists with status="error"   -> reported as "errored"
-  * A matching record exists with status="skipped" -> reported as "skipped"
-  * No matching record exists                      -> reported as "missed"
+  * Matched run, status="ok"      -> success (silently filtered out)
+  * Matched run, status="error"   -> reported as "errored"
+  * Matched run, status="skipped" -> reported as "skipped"
+  * No matched run                -> "still running" if within timeout,
+                                     else reported as "missed"
+
+The "still running" cutoff comes from `agents.defaults.timeoutSeconds`
+in openclaw.json (with optional per-agent `agents.list[].timeoutSeconds`
+overrides), defaulting to 1800s.
 
 Crons do NOT need to be wired into the retry-watchdog (no failure-alert
 webhook required). This module reads OpenClaw's filesystem state
-directly and reports on it — purely informational.
+directly and reports on it -- purely informational.
 
-The `fire_now` operation calls `openclaw cron run <id>` via the existing
-oc.cron_run helper. The watchdog does not track or retry this; it's a
-one-shot manual catch-up.
-
-History note: an earlier v0.7/v0.8 implementation used a +/- grace window
-on the `ts` field instead of matching `runAtMs`. That produced false
-"missed" classifications when a cron took longer than the grace to run
-(common for 35B-model agents). Replaced 2026-06-10 with runAtMs matching.
+History notes:
+  v0.7/v0.8     : matched on `ts` (finish time) with a +/-5min grace
+                  window. Marked successful runs as MISSED when they
+                  took longer than the grace to finish.
+  v0.8.1 (init) : matched on `runAtMs` with a tight +/-60s tolerance
+                  assuming runAtMs was the scheduled fire time. Wrong:
+                  runAtMs is actual start time, which drifts by queue
+                  delay (multiple minutes on busy schedulers).
+  v0.8.2        : current. Each fire owns an interval bounded by the
+                  next fire or by the cron's timeout, accommodating
+                  any scheduler queue delay up to the timeout.
 """
 from __future__ import annotations
 
@@ -50,6 +64,62 @@ from zoneinfo import ZoneInfo
 
 import cron_parser
 import openclaw_lookup as oc
+
+
+# Default queue cushion past timeout for the final fire's match interval.
+# After E + timeout + cushion, if nothing has runAtMs in the interval,
+# we call it missed.
+_QUEUE_CUSHION_SEC = 600
+# Default lead tolerance (the scheduler can fire a few seconds before E
+# due to clock skew). 60s is a generous bound; we never need more lead
+# than this in practice.
+_DEFAULT_LEAD_TOL_SEC = 60
+
+
+def assign_runs_to_fires(
+    fires_sorted: list[datetime],
+    runs_sorted_by_runat: list[dict[str, Any]],
+    timeout_sec: int,
+    lead_tol_sec: int = _DEFAULT_LEAD_TOL_SEC,
+    queue_cushion_sec: int = _QUEUE_CUSHION_SEC,
+) -> list[dict[str, Any] | None]:
+    """Match each scheduled fire to at most one finished run record.
+
+    Each fire E owns the half-open interval `[E - lead_tol, next_E)` --
+    or for the final fire, `[E - lead_tol, E + timeout + cushion]`. The
+    earliest unassigned run whose `runAtMs` falls in that interval is
+    claimed; later runs cannot match an earlier fire.
+
+    Returns a list aligned 1:1 with `fires_sorted` where each entry is
+    the matched run record, or None if no run matched.
+
+    Both inputs must be pre-sorted ascending. `runs_sorted_by_runat`
+    must contain only records whose `runAtMs` is a number; callers
+    should filter accordingly.
+    """
+    lead_tol_ms = lead_tol_sec * 1000
+    timeout_ms = timeout_sec * 1000
+    cushion_ms = queue_cushion_sec * 1000
+    out: list[dict[str, Any] | None] = [None] * len(fires_sorted)
+    ptr = 0
+    n_runs = len(runs_sorted_by_runat)
+    for i, expected_dt in enumerate(fires_sorted):
+        expected_ms = int(expected_dt.timestamp() * 1000)
+        lower = expected_ms - lead_tol_ms
+        if i + 1 < len(fires_sorted):
+            upper = int(fires_sorted[i + 1].timestamp() * 1000) - lead_tol_ms
+        else:
+            upper = expected_ms + timeout_ms + cushion_ms
+
+        # Advance past runs that are too old to match any future fire
+        # (their runAtMs is below this fire's lower bound, and fires
+        # ascend, so they can't match later fires either).
+        while ptr < n_runs and runs_sorted_by_runat[ptr]["runAtMs"] < lower:
+            ptr += 1
+        if ptr < n_runs and runs_sorted_by_runat[ptr]["runAtMs"] < upper:
+            out[i] = runs_sorted_by_runat[ptr]
+            ptr += 1
+    return out
 
 
 def _read_openclaw_timeouts(openclaw_config_path: str) -> tuple[int, dict]:
@@ -103,7 +173,6 @@ def find_missed(*, jobs_json_path: str, runs_dir: str,
     if since.tzinfo is None or until.tzinfo is None:
         raise ValueError("since/until must be timezone-aware")
 
-    tol_ms = match_tolerance_seconds * 1000
     default_timeout_sec, agent_timeouts = _read_openclaw_timeouts(
         openclaw_config_path or "~/.openclaw/openclaw.json")
     now = datetime.now(since.tzinfo)
@@ -144,8 +213,9 @@ def find_missed(*, jobs_json_path: str, runs_dir: str,
             continue
 
         # Per-cron timeout from openclaw.json (per-agent override > default).
-        # Used to classify "no record yet" as either still-running (within
-        # timeout) or definitively missed (past timeout).
+        # Used both to bound the per-fire match interval and to classify
+        # "no record yet" as either still-running (within timeout) or
+        # definitively missed (past timeout).
         agent_id = j.get("agent") or ""
         timeout_sec = agent_timeouts.get(agent_id, default_timeout_sec)
 
@@ -171,43 +241,36 @@ def find_missed(*, jobs_json_path: str, runs_dir: str,
         if not displayable_fires:
             continue
 
-        # Fetch all finished runs whose runAtMs could plausibly match any
-        # displayable fire. Widen the window by the match tolerance on
-        # each side. Note we filter by ts here (the field all_runs_for
-        # uses) but apply runAtMs matching below -- ts is always >=
-        # runAtMs so a window on ts is a safe lower bound on runAtMs.
-        first_fire = displayable_fires[0]
-        last_fire = displayable_fires[-1]
-        runs_since_ms = int((first_fire - timedelta(seconds=match_tolerance_seconds)).timestamp() * 1000)
-        # Add timeout to upper bound so we catch records whose ts is
-        # delayed by the longest possible run duration.
-        runs_until_ms = int((last_fire + timedelta(seconds=timeout_sec + match_tolerance_seconds + 60)).timestamp() * 1000)
+        # Pull finished runs spanning the widest plausible match interval:
+        # from before the first fire (lead tolerance) to past the last
+        # fire + timeout + cushion. Filtered by `ts` (the field
+        # all_runs_for uses), which is always >= runAtMs, so the window
+        # is a safe upper bound for runAtMs.
+        fires_sorted = sorted(displayable_fires)
+        first_fire = fires_sorted[0]
+        last_fire = fires_sorted[-1]
+        lead_tol_sec = max(match_tolerance_seconds, _DEFAULT_LEAD_TOL_SEC)
+        runs_since_ms = int((first_fire - timedelta(seconds=lead_tol_sec)).timestamp() * 1000)
+        runs_until_ms = int((last_fire + timedelta(
+            seconds=timeout_sec + _QUEUE_CUSHION_SEC + 60)).timestamp() * 1000)
         runs = oc.all_runs_for(cron_id, runs_dir, runs_since_ms, runs_until_ms)
-
+        runs_with_runat = sorted(
+            (r for r in runs if isinstance(r.get("runAtMs"), (int, float))),
+            key=lambda r: r["runAtMs"],
+        )
         last_actual = runs[-1] if runs else None
 
-        for expected_dt in displayable_fires:
+        matches = assign_runs_to_fires(
+            fires_sorted, runs_with_runat, timeout_sec, lead_tol_sec=lead_tol_sec)
+
+        for expected_dt, matched in zip(fires_sorted, matches):
             expected_ms = int(expected_dt.timestamp() * 1000)
 
-            # Authoritative match: find a run record whose runAtMs is
-            # within tolerance of the expected fire time. This is the
-            # field OpenClaw itself writes for "what fire was this run
-            # scheduled for", so it does NOT drift with run duration.
-            matched = None
-            for r in runs:
-                rA = r.get("runAtMs")
-                if isinstance(rA, (int, float)) and abs(rA - expected_ms) <= tol_ms:
-                    matched = r
-                    break
-
             if matched is None:
-                # No record. Decide between "still running" and "missed"
-                # using the cron's configured timeout. If we're inside the
-                # timeout window, the run could still finish; we skip it
-                # (not a problem yet). If we're past it, definitively missed.
+                # No record claimed by this fire. Decide between "still
+                # running" (within timeout + queue cushion) and "missed".
                 seconds_since_fire = (now - expected_dt).total_seconds()
-                if seconds_since_fire <= timeout_sec:
-                    # Still potentially running; don't surface as a problem.
+                if seconds_since_fire <= timeout_sec + _QUEUE_CUSHION_SEC:
                     continue
                 kind = "missed"
             else:
@@ -260,3 +323,53 @@ def find_missed(*, jobs_json_path: str, runs_dir: str,
     # Sort by expected_at descending so the most recent miss is at the top
     out.sort(key=lambda e: e.get("expected_at_ms") or 0, reverse=True)
     return out
+
+
+def classify_fires(
+    fires_sorted: list[datetime],
+    runs_with_runat: list[dict[str, Any]],
+    timeout_sec: int,
+    now: datetime,
+    lead_tol_sec: int = _DEFAULT_LEAD_TOL_SEC,
+) -> dict[str, int]:
+    """Bucket each fire in `fires_sorted` into a status category.
+
+    Returns a dict with counts: ok / error / skipped / missed / running /
+    upcoming. Total always equals len(fires_sorted).
+
+      upcoming  the fire time is in the future (now < expected)
+      running   no record matched but the fire is within timeout+cushion
+      ok/error/skipped  a record matched, classified by its status field
+      missed    no record matched and the fire is past timeout+cushion
+
+    Used by the schedules panel for the per-cron today's-fires breakdown.
+    """
+    matches = assign_runs_to_fires(
+        fires_sorted, runs_with_runat, timeout_sec, lead_tol_sec=lead_tol_sec)
+    out = {"ok": 0, "error": 0, "skipped": 0, "missed": 0,
+           "running": 0, "upcoming": 0}
+    for expected_dt, matched in zip(fires_sorted, matches):
+        if matched is not None:
+            status = (matched.get("status") or "").lower()
+            if status in out:
+                out[status] += 1
+            else:
+                out["error"] += 1
+            continue
+        if expected_dt > now:
+            out["upcoming"] += 1
+            continue
+        if (now - expected_dt).total_seconds() <= timeout_sec + _QUEUE_CUSHION_SEC:
+            out["running"] += 1
+        else:
+            out["missed"] += 1
+    return out
+
+
+def get_agent_timeout(openclaw_config_path: str, agent_id: str | None) -> int:
+    """Public accessor for the per-cron timeout. Server uses this when
+    computing schedules-panel breakdowns."""
+    default_to, overrides = _read_openclaw_timeouts(openclaw_config_path)
+    if agent_id and agent_id in overrides:
+        return overrides[agent_id]
+    return default_to
