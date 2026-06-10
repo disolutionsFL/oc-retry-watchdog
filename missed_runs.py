@@ -43,6 +43,7 @@ on the `ts` field instead of matching `runAtMs`. That produced false
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
