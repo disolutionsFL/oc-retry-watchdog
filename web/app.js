@@ -734,11 +734,14 @@ function renderMissedRuns(r) {
   }
   empty.textContent = "";
   tbody.innerHTML = rows.map(row => {
+    const agentCell = row.agent
+      ? `<span class="agent-chip c${agentColorIndex(row.agent)}">${escapeHtml(row.agent)}</span>`
+      : `<span class="muted">—</span>`;
     if (row.schedule_parse_error) {
       return `
         <tr class="missed-parse-error">
           <td><strong>${escapeHtml(row.name || row.cron_id)}</strong><br><small><code>${row.cron_id}</code></small></td>
-          <td><small class="muted">${escapeHtml(row.agent || "?")}</small></td>
+          <td>${agentCell}</td>
           <td><code>${escapeHtml(row.schedule || "")}</code></td>
           <td colspan="2" class="bad" title="${escapeAttr(row.schedule_parse_error)}">Schedule parse error: ${escapeHtml(row.schedule_parse_error.slice(0, 80))}${row.schedule_parse_error.length > 80 ? "…" : ""}</td>
           <td>—</td>
@@ -777,7 +780,7 @@ function renderMissedRuns(r) {
     return `
       <tr class="missed-row missed-row-${kind}">
         <td><strong>${escapeHtml(row.name || row.cron_id)}</strong><br><small><code>${row.cron_id}</code></small></td>
-        <td><small>${escapeHtml(row.agent || "?")}</small></td>
+        <td>${agentCell}</td>
         <td><code>${escapeHtml(row.schedule)}</code></td>
         <td>${fmtDate(row.expected_at_iso)}</td>
         <td>${whatCol}</td>
