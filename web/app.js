@@ -685,10 +685,103 @@ async function loadAll() {
     renderAgentFilter();
     renderCrons();
     updateHeader();
-    loadHeartbeat();   // async, fire-and-forget
+    loadHeartbeat();      // async, fire-and-forget
+    loadMissedRuns();     // async, fire-and-forget
+    // Only refresh schedules if the panel is open (collapsed = skip the
+    // jobs.json read). When the operator first opens the <details>, the
+    // toggle event handler triggers a load.
+    if ($("#schedules-panel").open) loadCronSchedules();
   } catch (e) {
     toast(`Load failed: ${e.message}`, "bad");
   }
+}
+
+// ----- missed cron runs -----
+
+function todayInLocalTz() {
+  // Use local clock so the date input matches what the operator sees on
+  // the wall. The server re-interprets this in server.timezone, which is
+  // fine for any operator whose machine clock is in the same tz (or
+  // close enough — the day picker is informal).
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function loadMissedRuns() {
+  const dayInput = $("#missed-day");
+  if (!dayInput.value) dayInput.value = todayInLocalTz();
+  const day = dayInput.value;
+  try {
+    const r = await api("GET", `/api/missed-runs?day=${encodeURIComponent(day)}`);
+    renderMissedRuns(r);
+  } catch (e) {
+    $("#missed-tbody").innerHTML = `<tr><td colspan="6" class="bad">Load failed: ${escapeHtml(e.message)}</td></tr>`;
+    $("#missed-empty").textContent = "";
+  }
+}
+
+function renderMissedRuns(r) {
+  const tbody = $("#missed-tbody");
+  const empty = $("#missed-empty");
+  const rows = r.missed || [];
+  if (!rows.length) {
+    tbody.innerHTML = "";
+    empty.textContent = `No missed or failed cron runs on ${r.day} (grace ${r.grace_minutes} min, tz ${r.timezone}). All expected fires that have occurred so far landed cleanly with status=ok.`;
+    return;
+  }
+  empty.textContent = "";
+  tbody.innerHTML = rows.map(row => {
+    if (row.schedule_parse_error) {
+      return `
+        <tr class="missed-parse-error">
+          <td><strong>${escapeHtml(row.name || row.cron_id)}</strong><br><small><code>${row.cron_id}</code></small></td>
+          <td><small class="muted">${escapeHtml(row.agent || "?")}</small></td>
+          <td><code>${escapeHtml(row.schedule || "")}</code></td>
+          <td colspan="2" class="bad" title="${escapeAttr(row.schedule_parse_error)}">Schedule parse error: ${escapeHtml(row.schedule_parse_error.slice(0, 80))}${row.schedule_parse_error.length > 80 ? "…" : ""}</td>
+          <td>—</td>
+        </tr>
+      `;
+    }
+    const kind = row.kind || "missed";
+    const kindBadge = `<span class="badge-kind kind-${kind}">${kind}</span>`;
+
+    // Errored AND not wired into the watchdog = a prime candidate to start
+    // watching. Flag visibly and offer a one-click Wire button.
+    const unwiredFlag = (kind === "errored" && row.wired_to_watchdog === false)
+      ? ` <span class="badge-kind kind-unwired" title="This cron is erroring but isn't wired into the retry-watchdog. Click Wire to start tracking it.">not watched</span>`
+      : "";
+
+    let whatCol;
+    if (kind === "errored" && row.matched_run_iso) {
+      whatCol = `${kindBadge}${unwiredFlag} <small>at ${fmtDate(row.matched_run_iso)} <span class="muted">(${escapeHtml(row.matched_run_status || "?")})</span></small>`;
+    } else if (row.last_actual_run_iso) {
+      whatCol = `${kindBadge}${unwiredFlag} <small class="muted">last successful run: ${fmtDate(row.last_actual_run_iso)} (${escapeHtml(row.last_actual_run_status || "?")})</small>`;
+    } else {
+      whatCol = `${kindBadge}${unwiredFlag} <small class="muted">no run record in window</small>`;
+    }
+
+    // Action buttons: Fire always, plus Wire on errored+unwired so the
+    // operator can promote a previously-untracked cron into the watchdog
+    // with one click.
+    let actions = `<button class="btn-mini primary" data-action="fire-missed" data-id="${row.cron_id}" title="openclaw cron run ${escapeAttr(row.cron_id)}">Fire</button>`;
+    if (kind === "errored" && row.wired_to_watchdog === false) {
+      actions += ` <button class="btn-mini success" data-action="wire-missed" data-id="${row.cron_id}" title="Wire this cron's failure-alert webhook to this watchdog so future errors are tracked and retried.">Wire</button>`;
+    }
+
+    return `
+      <tr class="missed-row missed-row-${kind}">
+        <td><strong>${escapeHtml(row.name || row.cron_id)}</strong><br><small><code>${row.cron_id}</code></small></td>
+        <td><small>${escapeHtml(row.agent || "?")}</small></td>
+        <td><code>${escapeHtml(row.schedule)}</code></td>
+        <td>${fmtDate(row.expected_at_iso)}</td>
+        <td>${whatCol}</td>
+        <td class="actions">${actions}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 function updateHeader() {
@@ -1029,6 +1122,188 @@ $("#hb-scan-now").addEventListener("click", async () => {
     toast(msg, stats.predicates_failed > 0 ? "bad" : "good");
     loadAll();
   } catch (e) { toast(`Scan failed: ${e.message}`, "bad"); }
+});
+
+// Missed-runs panel wiring
+$("#missed-day").addEventListener("change", loadMissedRuns);
+$("#missed-refresh").addEventListener("click", loadMissedRuns);
+
+// ----- All cron schedules panel -----
+
+const SCHED_AGENT_FILTER_KEY = "oc-retry-watchdog-sched-agent-filter";
+const schedDisabledAgents = (() => {
+  try {
+    const raw = localStorage.getItem(SCHED_AGENT_FILTER_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+})();
+function saveSchedAgentFilter() {
+  try { localStorage.setItem(SCHED_AGENT_FILTER_KEY, JSON.stringify([...schedDisabledAgents])); }
+  catch { /* ignore */ }
+}
+
+const schedState = { schedules: [], tz: "", today: "" };
+
+async function loadCronSchedules() {
+  try {
+    const r = await api("GET", "/api/cron-schedules");
+    schedState.schedules = r.schedules || [];
+    schedState.tz = r.timezone || "";
+    schedState.today = r.today || "";
+    renderSchedulesAgentFilter();
+    renderSchedulesTable();
+  } catch (e) {
+    $("#schedules-tbody").innerHTML = `<tr><td colspan="7" class="bad">Load failed: ${escapeHtml(e.message)}</td></tr>`;
+    $("#schedules-count").textContent = "";
+  }
+}
+
+function renderSchedulesAgentFilter() {
+  const el = $("#schedules-agent-filter");
+  const agents = Array.from(new Set(schedState.schedules.map(s => s.agent || "").filter(Boolean))).sort();
+  if (!agents.length) { el.innerHTML = ""; return; }
+  el.innerHTML = agents.map(a => {
+    const active = !schedDisabledAgents.has(a);
+    const idx = agentColorIndex(a);
+    return `<button class="agent-filter-chip c${idx}${active ? " active" : ""}" data-sched-agent="${escapeAttr(a)}">${escapeHtml(a)}</button>`;
+  }).join("") + ` <button class="btn-link" style="font-size:11px;" id="sched-filter-reset">Show all</button>`;
+}
+
+function renderSchedulesTable() {
+  const tbody = $("#schedules-tbody");
+  let rows = schedState.schedules.slice();
+  // Apply agent filter
+  rows = rows.filter(s => !s.agent || !schedDisabledAgents.has(s.agent));
+  // Sort: enabled first, then by agent, then by name
+  rows.sort((a, b) => {
+    if (!!b.enabled - !!a.enabled !== 0) return (!!b.enabled) - (!!a.enabled);
+    if ((a.agent || "") !== (b.agent || "")) return (a.agent || "").localeCompare(b.agent || "");
+    return (a.name || a.cron_id || "").localeCompare(b.name || b.cron_id || "");
+  });
+  $("#schedules-count").textContent = `(${rows.length} of ${schedState.schedules.length})`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">No crons match the current filter.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(s => {
+    const enabledCell = s.enabled
+      ? `<span class="good" title="Enabled">on</span>`
+      : `<span class="muted" title="Disabled in OpenClaw">off</span>`;
+    const todayCount = (s.today_fires || []).length;
+    const todayCountCell = s.schedule_parse_error
+      ? `<small class="bad" title="${escapeAttr(s.schedule_parse_error)}">parse error</small>`
+      : todayCount === 0
+        ? `<small class="muted">0</small>`
+        : `<span title="${escapeAttr((s.today_fires || []).map(fmtDate).join('\n'))}">${todayCount}</span>`;
+    const nextFire = s.next_fire_iso ? fmtDate(s.next_fire_iso) : `<span class="muted">—</span>`;
+    const lastRun = s.last_actual_run_iso
+      ? `${fmtDate(s.last_actual_run_iso)} <small class="muted">(${escapeHtml(s.last_actual_run_status || "?")})</small>`
+      : `<span class="muted">never</span>`;
+    const wiredCell = s.wired_to_watchdog
+      ? `<span class="wire-status wired" title="Failure-alert webhook points at this watchdog">wired</span>`
+      : `<span class="wire-status unwired" title="No failure-alert webhook configured for this watchdog">unwired</span>`;
+    const agentCell = s.agent
+      ? `<span class="agent-chip c${agentColorIndex(s.agent)}">${escapeHtml(s.agent)}</span>`
+      : `<span class="muted">—</span>`;
+    return `
+      <tr class="sched-row ${s.enabled ? '' : 'sched-row-disabled'}">
+        <td><strong>${escapeHtml(s.name || s.cron_id)}</strong> ${enabledCell}<br><small><code>${s.cron_id}</code></small></td>
+        <td>${agentCell}</td>
+        <td><code>${escapeHtml(s.schedule || '')}</code></td>
+        <td class="num">${todayCountCell}</td>
+        <td>${nextFire}</td>
+        <td>${lastRun}</td>
+        <td>${wiredCell}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+$("#schedules-agent-filter").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-sched-agent]");
+  if (chip) {
+    const a = chip.dataset.schedAgent;
+    if (schedDisabledAgents.has(a)) schedDisabledAgents.delete(a);
+    else schedDisabledAgents.add(a);
+    saveSchedAgentFilter();
+    renderSchedulesAgentFilter();
+    renderSchedulesTable();
+    return;
+  }
+  if (e.target.id === "sched-filter-reset") {
+    schedDisabledAgents.clear();
+    saveSchedAgentFilter();
+    renderSchedulesAgentFilter();
+    renderSchedulesTable();
+  }
+});
+
+$("#schedules-panel").addEventListener("toggle", () => {
+  if ($("#schedules-panel").open && schedState.schedules.length === 0) {
+    loadCronSchedules();
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const fireBtn = e.target.closest("[data-action='fire-missed']");
+  const wireBtn = e.target.closest("[data-action='wire-missed']");
+  if (!fireBtn && !wireBtn) return;
+  const t = fireBtn || wireBtn;
+  const cronId = t.dataset.id;
+
+  if (fireBtn) {
+    if (!await appConfirm({
+      title: "Fire this cron now?",
+      message: `Run <code>openclaw cron run ${escapeHtml(cronId)}</code> as a one-shot catch-up. This is not tracked as a retry — once the run finishes and shows up in the runs log, this row falls off the list on the next refresh.`,
+      confirmLabel: "Fire",
+      confirmKind: "primary",
+    })) return;
+    t.disabled = true;
+    const originalText = t.textContent;
+    t.textContent = "Firing…";
+    try {
+      const r = await api("POST", `/api/missed-runs/${cronId}/fire`);
+      if (r.ok) {
+        toast(`Cron fired${r.run_id ? ` (run ${r.run_id})` : ""}. Refreshing in 3s…`, "good");
+        setTimeout(loadMissedRuns, 3000);
+      } else {
+        toast(`Fire failed: ${(r.output || "").slice(0, 200)}`, "bad");
+        t.disabled = false;
+        t.textContent = originalText;
+      }
+    } catch (err) {
+      toast(`Fire failed: ${err.message}`, "bad");
+      t.disabled = false;
+      t.textContent = originalText;
+    }
+  } else if (wireBtn) {
+    if (!await appConfirm({
+      title: "Wire this cron to the watchdog?",
+      message: `Point cron <code>${escapeHtml(cronId)}</code>'s failure-alert webhook at this watchdog. Future errors will be tracked and retried per the configured policy. You can unwire later from the Admin modal.`,
+      confirmLabel: "Wire",
+      confirmKind: "success",
+    })) return;
+    t.disabled = true;
+    const originalText = t.textContent;
+    t.textContent = "Wiring…";
+    try {
+      const r = await api("POST", `/api/openclaw-jobs/${cronId}/wire`);
+      if (r.ok) {
+        toast(`Cron wired. Future failures will now be tracked.`, "good");
+        loadAll();   // refresh the main cron table too, the cron is now in our DB
+      } else {
+        toast(`Wire failed: ${(r.output || "").slice(0, 200)}`, "bad");
+        t.disabled = false;
+        t.textContent = originalText;
+      }
+    } catch (err) {
+      toast(`Wire failed: ${err.message}`, "bad");
+      t.disabled = false;
+      t.textContent = originalText;
+    }
+  }
 });
 
 $("#settings-btn").addEventListener("click", async () => {

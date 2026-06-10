@@ -87,7 +87,62 @@
       <p class="hint hb-hint">The scanner runs every 5 min (configurable). For each predicate-configured cron, the latest <code>status=ok</code> finished run is checked against its predicates. Predicate failures trigger the same retry/alert flow as a webhook failure.</p>
     </section>
 
-    <p class="hint">v0.6.0 — alert emails now include AI-generated likely-cause diagnoses, with on-demand Explain buttons in cron history for past failures.</p>
+    <section id="missed-panel" class="panel">
+      <div class="missed-header">
+        <h2>Missed &amp; failed cron runs</h2>
+        <span class="grow"></span>
+        <label class="missed-date-label">Day
+          <input type="date" id="missed-day">
+        </label>
+        <button id="missed-refresh" class="btn-link">Refresh</button>
+      </div>
+      <p class="hint missed-hint">Reads <code>jobs.json</code> + <code>cron/runs/&lt;id&gt;.jsonl</code> directly. Each row is one expected fire time that did NOT produce a <code>status=ok</code> run within &plusmn;5 min &mdash; either no run record exists (<span class="badge-kind kind-missed">missed</span>) or every run in the window errored (<span class="badge-kind kind-errored">errored</span>). Crons do not need to be wired into the watchdog to appear here. The per-row <strong>Fire</strong> button calls <code>openclaw cron run &lt;id&gt;</code> as a manual catch-up; once a successful run lands, the row falls off this list on the next refresh.</p>
+      <div class="table-scroll missed-table-wrap">
+        <table id="missed-table">
+          <thead>
+            <tr>
+              <th>Cron</th>
+              <th>Agent</th>
+              <th>Schedule</th>
+              <th>Expected at</th>
+              <th>What happened</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="missed-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="missed-empty"></p>
+    </section>
+
+    <details id="schedules-panel" class="panel schedules-panel">
+      <summary class="schedules-summary">
+        <span class="schedules-title">All cron schedules</span>
+        <span id="schedules-count" class="muted"></span>
+        <span class="grow"></span>
+        <button id="schedules-refresh" type="button" class="btn-link" onclick="event.preventDefault(); event.stopPropagation(); loadCronSchedules();">Refresh</button>
+      </summary>
+      <p class="hint schedules-hint">Real-time view of every cron in <code>jobs.json</code>. Filter by agent to focus. Wired-to-watchdog status shown so you can see at a glance which crons are tracked.</p>
+      <div id="schedules-agent-filter" class="schedules-agent-filter"></div>
+      <div class="table-scroll schedules-table-wrap">
+        <table id="schedules-table">
+          <thead>
+            <tr>
+              <th>Cron</th>
+              <th>Agent</th>
+              <th>Schedule</th>
+              <th>Today's fires</th>
+              <th>Next fire</th>
+              <th>Last run</th>
+              <th>Wired</th>
+            </tr>
+          </thead>
+          <tbody id="schedules-tbody"></tbody>
+        </table>
+      </div>
+    </details>
+
+    <p class="hint">v0.7.0 &mdash; missed/failed cron run detection lives in the dashboard with a date picker for history review. Picks up any cron in <code>jobs.json</code> regardless of retry-watchdog wiring, and surfaces errored unwatched crons as candidates to wire. Plus a collapsible all-schedules panel for the full agent-by-agent view.</p>
   </main>
 
   <dialog id="settings-modal">

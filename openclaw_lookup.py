@@ -148,3 +148,44 @@ def last_run_for(cron_id: str, runs_dir: str) -> dict[str, Any] | None:
     except OSError:
         return None
     return last
+
+
+def all_runs_for(cron_id: str, runs_dir: str,
+                 since_ts_ms: int | None = None,
+                 until_ts_ms: int | None = None
+                 ) -> list[dict[str, Any]]:
+    """Return ALL 'finished' run records for a cron, optionally filtered to a
+    [since_ts_ms, until_ts_ms) wall-clock window. Used by missed-run detection
+    to check whether each expected fire time has a corresponding actual run.
+
+    Bounds are in milliseconds since epoch to match the openclaw `ts` field.
+    Records are returned in ascending ts order.
+    """
+    p = Path(os.path.expanduser(runs_dir)) / f"{cron_id}.jsonl"
+    if not p.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("action") != "finished":
+                continue
+            ts = r.get("ts")
+            if not isinstance(ts, (int, float)):
+                continue
+            if since_ts_ms is not None and ts < since_ts_ms:
+                continue
+            if until_ts_ms is not None and ts >= until_ts_ms:
+                continue
+            out.append(r)
+    except OSError:
+        return []
+    out.sort(key=lambda r: r.get("ts", 0))
+    return out
+    return last

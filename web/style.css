@@ -829,3 +829,105 @@ tr.hist-queued { background: rgba(46,125,50,0.04); }
   .history-modal-body { padding: 8px 12px 16px; }
   .history-error { max-width: 220px; }
 }
+
+/* ----- Missed-runs panel ----- */
+.missed-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.missed-header h2 { margin: 0; font-size: 14px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.5px; }
+.missed-header .grow { flex: 1; }
+.missed-date-label {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--muted);
+}
+.missed-date-label input[type="date"] {
+  font-size: 12px; padding: 2px 6px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-surface); color: var(--fg);
+}
+.missed-hint { margin: 0 0 8px; }
+
+.missed-table-wrap { overflow-x: auto; }
+#missed-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#missed-table th {
+  text-align: left; padding: 6px 8px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--muted); font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+#missed-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+#missed-table td.actions { white-space: nowrap; text-align: right; }
+#missed-table code { font-size: 11px; }
+
+tr.missed-row-errored { background: rgba(178,28,28,0.05); }
+tr.missed-parse-error { background: rgba(201,122,0,0.05); }
+
+.badge-kind {
+  display: inline-block; padding: 1px 7px; border-radius: 10px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.kind-missed   { background: var(--bg-pill);            color: var(--muted); }
+.kind-errored  { background: rgba(178,28,28,0.18);      color: var(--bad); }
+.kind-unwired  { background: rgba(201,122,0,0.18);      color: var(--warn); }
+
+@media (max-width: 700px) {
+  .missed-header { gap: 8px; }
+  #missed-table th, #missed-table td { padding: 5px 6px; font-size: 11px; }
+}
+
+/* ----- All cron schedules (collapsible) ----- */
+.schedules-panel { padding: 0; overflow: hidden; }
+.schedules-panel > .schedules-summary {
+  cursor: pointer; list-style: none;
+  padding: 12px 16px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  user-select: none;
+  outline: none;
+}
+.schedules-panel > .schedules-summary::-webkit-details-marker { display: none; }
+.schedules-panel > .schedules-summary::before {
+  content: "▸"; font-size: 12px; transition: transform 0.15s ease;
+  display: inline-block;
+}
+.schedules-panel[open] > .schedules-summary::before { transform: rotate(90deg); }
+.schedules-panel[open] > .schedules-summary { border-bottom: 1px solid var(--border); }
+.schedules-title { font-weight: 600; }
+.schedules-summary .grow { flex: 1; }
+.schedules-panel > .schedules-hint,
+.schedules-panel > .schedules-agent-filter,
+.schedules-panel > .schedules-table-wrap {
+  padding: 0 16px;
+}
+.schedules-panel > .schedules-hint { margin: 10px 16px 6px; }
+.schedules-agent-filter {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  padding: 6px 16px 8px;
+}
+.schedules-table-wrap { overflow-x: auto; padding-bottom: 12px; }
+#schedules-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#schedules-table th {
+  text-align: left; padding: 6px 8px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--muted); font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+#schedules-table th.num { text-align: right; }
+#schedules-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+#schedules-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#schedules-table code { font-size: 11px; }
+tr.sched-row-disabled { opacity: 0.55; }
+
+@media (max-width: 700px) {
+  #schedules-table th, #schedules-table td { padding: 5px 6px; font-size: 11px; }
+}

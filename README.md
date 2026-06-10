@@ -12,7 +12,7 @@ OpenClaw's built-in cron scheduler supports failure alerting via webhook but doe
 
 The watchdog provides all three on top of OpenClaw's existing infrastructure, with a JSON HTTP API, a single-page Web UI, and zero non-stdlib Python dependencies.
 
-> **Current version:** v0.6.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6).
+> **Current version:** v0.7.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6), **missed-and-failed cron run detection with `jobs.json`-direct read + Fire/Wire one-click actions, and a collapsible all-schedules panel (v0.7)**.
 
 ## Architecture
 
@@ -240,7 +240,40 @@ The diagnosis modal renders the cause, next step, a confidence badge (`high` / `
 
 The system prompt embeds diagnostic signals (e.g. "ModelProviderError / empty payload / stopReason=length → model issue", "repeated identical failures → systemic, not transient") so the model anchors on observable signals rather than generic SRE prose. Parser is strict — malformed responses are treated as a failure and the email gets the "unavailable" note.
 
-### 6. Admin view — OpenClaw integration management (v0.3)
+### 6. Missed-and-failed cron run detection (v0.7)
+
+A "Missed & failed cron runs" panel in the main dashboard reads `jobs.json` + `cron/runs/<id>.jsonl` directly and reports every expected fire time on the selected day that did NOT produce a `status=ok` run within ±5 min. Crons do **not** need to be wired into the retry-watchdog to appear — this is purely a filesystem-state view of OpenClaw's own cron records.
+
+Each row is one expected fire time, categorized:
+
+- **missed** — no run record exists in the ±5 min window around the expected fire. The cron didn't run at all (host down, gateway down, missed schedule).
+- **errored** — at least one run exists in the window, but ALL of them have status != ok. The cron fired but failed.
+
+If a single run within the window succeeded, the expected fire is treated as cleanly handled and does not appear, even if other tries in the window failed.
+
+The panel defaults to **today** but accepts any date via the picker — useful for retroactively reviewing a day you weren't watching. The per-row **Fire** button calls `openclaw cron run <id>` as a one-shot manual catch-up; once the new run lands and is `status=ok`, the row falls off the list on the next refresh. This is a one-shot operator action, NOT a retry-event in the watchdog's history — the regular retry flow only kicks in when the cron is wired.
+
+#### Errored-but-unwired surfacing (the "you should wire this" hint)
+
+When the panel sees a cron erroring on a fire time, AND that cron's failure-alert webhook is NOT pointed at this watchdog, the row gets a `not watched` badge and an extra **Wire** button. One click wires the cron to the watchdog so future failures get tracked and retried per the configured policy. This was added because the dashboard owner shouldn't have to find out manually that a cron has been silently failing — if it shows up errored here, the watchdog should offer the path to start watching it.
+
+### 7. All cron schedules panel (v0.7)
+
+A collapsible "All cron schedules" panel under the missed-runs section. Reads `jobs.json` real-time on each open/refresh and lists every cron with:
+
+- Name + ID
+- Agent (with the same color-chip styling as the main table)
+- Schedule expression
+- Today's expected fire count (with hover-to-see-all)
+- Next upcoming fire time (within a 7-day lookahead)
+- Last actual run + status
+- Wired-to-watchdog status
+
+Agent filter chips along the top toggle which agents are visible; selection persists in localStorage. Disabled crons stay in the list but are dimmed so the operator can see "what's configured but inactive" at a glance.
+
+The panel is **collapsed by default** so the load is cheap on initial page render. Expand it once and it auto-loads; manual Refresh button at the top right refreshes without re-collapsing.
+
+### 8. Admin view — OpenClaw integration management (v0.3)
 
 A separate `Admin` modal reads `openclaw.json`'s job list and surfaces:
 
@@ -256,13 +289,9 @@ A separate `Admin` modal reads `openclaw.json`'s job list and surfaces:
 
 The Smart features list above is what's running today. A few items from the original design remain unbuilt:
 
-### Missed-run detection
+### ~~Missed-run detection~~ — **shipped in v0.7**
 
-Originally scoped for v0.3 alongside the predicate scanner. The idea: every scan pass, derive each cron's expected fire time from its cron expression, compare to the latest run record in `cron/runs/<id>.jsonl`, and treat a missing run for a fire window older than a configurable grace period as a synthetic failure. Would catch silent omissions (host rebooting, OpenClaw gateway down at fire time) that today's webhook + predicate paths can't see.
-
-Status: not implemented. The predicate path covers the most common case indirectly — when a cron doesn't run, its output file's mtime ages out and the predicate fails at the next scan — but that only works for crons with predicates configured. Crons without predicates can silently miss a fire.
-
-Build cost: small for fixed-schedule crons (a stdlib cron-expression parser is ~80 lines), bigger if we want to handle nonstandard schedules. The dead `grace_period_minutes` knob that briefly lived in `DEFAULT_CONFIG` was removed in v0.6.0; if and when missed-run detection lands it'll come back.
+Originally scoped for v0.3 alongside the predicate scanner; landed in v0.7.0 (2026-06-10) as the **Missed-and-failed cron runs** dashboard panel. See [feature 6 above](#6-missed-and-failed-cron-run-detection-v07). The v0.7 shape is somewhat different from the original v0.3 design — it's a read-only viewer with manual Fire/Wire one-click actions rather than an automatic retry-flow trigger. That ended up being the right scope: silent-missed-fire detection is a separate concern from the existing webhook-driven retry logic, and surfacing it as an operator-reviewed list keeps the semantics clean. The stdlib cron-expression parser (`cron_parser.py`) lives in the repo if anyone wants to build the auto-trigger variant later.
 
 ### Smart retry tuning
 
@@ -593,6 +622,9 @@ All endpoints return JSON.
 | GET | `/api/openclaw-jobs` | All OpenClaw crons + integration status + orphan list |
 | POST | `/api/openclaw-jobs/<id>/wire` | Run `openclaw cron edit --failure-alert ...` to wire this watchdog |
 | POST | `/api/openclaw-jobs/<id>/unwire` | Run `openclaw cron edit --no-failure-alert` |
+| GET | `/api/missed-runs?day=YYYY-MM-DD&grace_minutes=N` | List missed/errored expected fires for the given day (default today). Each entry carries `kind` (`missed` \| `errored`), `wired_to_watchdog`, and matched-run metadata. |
+| POST | `/api/missed-runs/<cron_id>/fire` | One-shot manual catch-up. Calls `openclaw cron run <cron_id>`. NOT tracked as a retry event. |
+| GET | `/api/cron-schedules` | All crons from `jobs.json` annotated with today's expected fires, next fire (7-day lookahead), last actual run, wired-to-watchdog status. Used by the All Cron Schedules panel. |
 
 ## Security
 

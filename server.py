@@ -10,6 +10,8 @@ v0.3 — background predicate scanner running on a fixed interval + full UI
 v0.4 — per-model tuning registry, offline-model detection, context-budget awareness.
 v0.5 — healthcheck framework with pre-retry enforcement + AI-assisted suggestions.
 v0.6 — failure-mode explanations: AI diagnosis on alert emails + on-demand UI button.
+v0.7 — missed/failed cron run detection (jobs.json direct read, Fire/Wire one-click)
+       + collapsible all-schedules panel with agent filter. Stdlib cron parser.
 
 Config is loaded from $RETRY_WATCHDOG_CONFIG, --config <path>, or ./config.json
 in that order of precedence.
@@ -27,7 +29,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -39,8 +41,9 @@ import openclaw_lookup as oc
 import heartbeat as heartbeat_mod
 import ai as ai_mod
 import predicates as predicates_mod
+import missed_runs as missed_runs_mod
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 _START_TIME = time.time()
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -509,6 +512,153 @@ class Watchdog:
         """Remove the failure-alert webhook from a cron. Watchdog DB row
         stays (history + predicates intact) — delete separately if desired."""
         return oc.cron_unwire(self.cfg["openclaw_cli"], cron_id)
+
+    # ----- Missed-run detection (v0.7) -----
+
+    def find_missed_runs(self, *, day_iso: str | None = None,
+                         grace_minutes: int = 5) -> dict:
+        """Return the list of missed cron runs for a day window.
+
+        `day_iso` is YYYY-MM-DD in `server.timezone`. Default is today.
+        Crons do NOT need to be registered in the watchdog — this reads
+        OpenClaw's jobs.json + runs/<id>.jsonl directly.
+
+        For days in the past, only fires before `now` are considered
+        misses (future expected fires can't possibly be misses yet).
+        """
+        tz_name = self.cfg["server"]["timezone"]
+        tz = ZoneInfo(tz_name)
+        if day_iso:
+            try:
+                day = datetime.strptime(day_iso, "%Y-%m-%d").date()
+            except ValueError:
+                raise RuntimeError(f"invalid day {day_iso!r}, expected YYYY-MM-DD")
+        else:
+            day = datetime.now(tz).date()
+
+        since = datetime(day.year, day.month, day.day, 0, 0, tzinfo=tz)
+        until = since + timedelta(days=1)
+
+        # For today (and any future day), cap `until` at now() so we don't
+        # report "missed" for fire times that simply haven't happened yet.
+        now = datetime.now(tz)
+        effective_until = min(until, now)
+        if effective_until <= since:
+            return {
+                "day": day.isoformat(),
+                "timezone": tz_name,
+                "grace_minutes": grace_minutes,
+                "now_iso": now.isoformat(),
+                "missed": [],
+            }
+
+        missed = missed_runs_mod.find_missed(
+            jobs_json_path=self.cfg["heartbeat"]["jobs_json_path"],
+            runs_dir=self.cfg["heartbeat"]["runs_dir_path"],
+            since=since,
+            until=effective_until,
+            default_tz=tz_name,
+            grace_minutes=int(grace_minutes),
+            expected_webhook_url=self._expected_webhook_url(),
+        )
+        return {
+            "day": day.isoformat(),
+            "timezone": tz_name,
+            "grace_minutes": grace_minutes,
+            "now_iso": now.isoformat(),
+            "missed": missed,
+        }
+
+    def list_cron_schedules(self) -> dict:
+        """Return every cron in jobs.json with computed today's fires +
+        next fire time, organized for the schedule-view panel.
+
+        Reads jobs.json fresh on every call -- this is intentionally
+        real-time so it reflects schedule changes immediately.
+        """
+        import cron_parser
+        tz_name = self.cfg["server"]["timezone"]
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        today_start = datetime(now.year, now.month, now.day, 0, 0, tzinfo=tz)
+        tomorrow_start = today_start + timedelta(days=1)
+        # Look ahead 7 days for the next fire if today has none left.
+        lookahead_end = today_start + timedelta(days=7)
+
+        expected_url = self._expected_webhook_url()
+        runs_dir = self.cfg["heartbeat"]["runs_dir_path"]
+        out = []
+        for j in oc.read_jobs_with_alerts(self.cfg["heartbeat"]["jobs_json_path"]):
+            cron_id = j.get("cron_id")
+            schedule_expr = (j.get("schedule") or "").strip()
+            tz_for_cron = j.get("timezone") or tz_name
+
+            today_fires_iso: list[str] = []
+            next_fire_iso: str | None = None
+            parse_error: str | None = None
+            try:
+                expr = cron_parser.parse(schedule_expr)
+                today_fires = cron_parser.fire_times(
+                    expr, tz_for_cron, today_start, tomorrow_start)
+                today_fires_iso = [d.isoformat() for d in today_fires]
+                # First future fire (in the lookahead window)
+                future = cron_parser.fire_times(
+                    expr, tz_for_cron, now, lookahead_end)
+                if future:
+                    next_fire_iso = future[0].isoformat()
+            except (ValueError, KeyError) as e:
+                parse_error = str(e)
+
+            # Last actual run time (if any)
+            last_actual_iso = None
+            last_actual_status = None
+            last = oc.last_run_for(cron_id, runs_dir) if cron_id else None
+            if last and isinstance(last.get("ts"), (int, float)):
+                last_actual_iso = datetime.fromtimestamp(
+                    last["ts"] / 1000, tz=ZoneInfo(tz_for_cron)
+                ).isoformat()
+                last_actual_status = last.get("status")
+
+            fa = j.get("failure_alert") or {}
+            wired_here = (
+                fa.get("mode") == "webhook"
+                and fa.get("to") == expected_url
+            )
+
+            out.append({
+                "cron_id": cron_id,
+                "name": j.get("name"),
+                "agent": j.get("agent"),
+                "schedule": schedule_expr,
+                "timezone": tz_for_cron,
+                "enabled": bool(j.get("enabled")),
+                "today_fires": today_fires_iso,
+                "today_fire_count": len(today_fires_iso),
+                "next_fire_iso": next_fire_iso,
+                "last_actual_run_iso": last_actual_iso,
+                "last_actual_run_status": last_actual_status,
+                "wired_to_watchdog": wired_here,
+                "schedule_parse_error": parse_error,
+            })
+        return {
+            "timezone": tz_name,
+            "now_iso": now.isoformat(),
+            "today": today_start.date().isoformat(),
+            "schedules": out,
+        }
+
+    def fire_cron_now(self, cron_id: str) -> dict:
+        """Manually fire `openclaw cron run <id>` for a cron the user picked
+        from the missed-runs view. Does NOT register the cron in the
+        watchdog DB and does NOT record a retry event — this is a one-shot
+        catch-up, not part of the retry flow."""
+        ok, run_id, raw = oc.cron_run(self.cfg["openclaw_cli"], cron_id)
+        return {
+            "ok": ok,
+            "cron_id": cron_id,
+            "run_id": run_id,
+            "output": (raw or "")[:1500],
+        }
 
     def delete_cron(self, cron_id: str) -> bool:
         """Remove a cron from the watchdog DB. Used for orphan cleanup.
@@ -1103,6 +1253,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, [dict(r) for r in rows])
         elif path == "/api/openclaw-jobs":
             self._send_json(200, WATCHDOG.list_openclaw_jobs())
+        elif path == "/api/cron-schedules":
+            self._send_json(200, WATCHDOG.list_cron_schedules())
+        elif path == "/api/missed-runs":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            day = (qs.get("day") or [None])[0]
+            grace = (qs.get("grace_minutes") or ["5"])[0]
+            try:
+                grace_int = max(0, int(grace))
+            except ValueError:
+                self._send_json(400, {"ok": False,
+                                      "error": "grace_minutes must be an integer"})
+                return
+            try:
+                result = WATCHDOG.find_missed_runs(day_iso=day,
+                                                    grace_minutes=grace_int)
+            except RuntimeError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, result)
         else:
             self._send_text(404, "Not found")
 
@@ -1228,6 +1397,17 @@ class Handler(BaseHTTPRequestHandler):
                                 {"ok": ok, "action": "unwired" if ok else "unwire-failed",
                                  "output": output[:1000]})
                 return
+
+        # POST /api/missed-runs/<cron_id>/fire
+        # One-shot manual catch-up for a cron the operator picked from the
+        # Missed Runs view. Calls `openclaw cron run <id>` directly; no
+        # retry-event row, no watchdog DB registration.
+        if (len(m) >= 5 and m[1] == "api" and m[2] == "missed-runs"
+                and m[4] == "fire"):
+            cron_id = m[3]
+            result = WATCHDOG.fire_cron_now(cron_id)
+            self._send_json(200 if result.get("ok") else 500, result)
+            return
 
         self._send_text(404, "Not found")
 
