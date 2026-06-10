@@ -884,6 +884,11 @@ tr.missed-row-skipped { background: rgba(201,122,0,0.04); }
 .fires-breakdown { display: inline-block; margin-left: 4px; }
 .fires-breakdown .badge-kind { margin-right: 2px; }
 .fires-count { font-weight: 600; }
+/* Left-align the Occurrences count so the number sits next to the
+   Status Today chips column rather than hugging the column's right
+   edge (which made the number and chip read as misaligned). */
+#schedules-table td.occurrences-cell,
+#schedules-table th:nth-child(4) { text-align: left; padding-left: 12px; }
 
 /* Row-status left border indicator on schedule rows */
 tr.sched-row td:first-child { border-left: 3px solid transparent; }

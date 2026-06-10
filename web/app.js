@@ -1370,7 +1370,7 @@ function renderSchedulesTable() {
         <td><strong>${escapeHtml(s.name || s.cron_id)}</strong> ${enabledCell}<br><small><code>${s.cron_id}</code></small></td>
         <td>${agentCell}</td>
         <td><code>${escapeHtml(s.schedule || '')}</code></td>
-        <td class="num">${todayCountCell}</td>
+        <td class="occurrences-cell">${todayCountCell}</td>
         <td>${statusTodayCell}</td>
         <td>${nextFire}</td>
         <td>${lastRun}</td>
