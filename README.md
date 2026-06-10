@@ -12,7 +12,80 @@ OpenClaw's built-in cron scheduler supports failure alerting via webhook but doe
 
 The watchdog provides all three on top of OpenClaw's existing infrastructure, with a JSON HTTP API, a single-page Web UI, and zero non-stdlib Python dependencies.
 
-> **Current version:** v0.8.0 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6), missed-and-failed cron run detection with `jobs.json`-direct read + Fire/Wire one-click actions and a collapsible all-schedules panel (v0.7), **per-row Explain on the missed/failed panel that combines AI failure-mode diagnosis, live healthcheck (dependency) state, and a derived re-fire recommendation (v0.8)**.
+> **Current version:** v0.8.2 — webhook retry/alert (v0.1), predicate verification (v0.2), full UI + admin + tuning (v0.3–v0.4), healthcheck framework with AI assist + enforcement (v0.5), AI failure-mode explanations on alert emails + on-demand in UI (v0.6), missed-and-failed cron run detection with `jobs.json`-direct read + Fire/Wire one-click actions and a collapsible all-schedules panel (v0.7), **per-row Explain on the missed/failed panel that combines AI failure-mode diagnosis, live healthcheck (dependency) state, and a derived re-fire recommendation (v0.8)**, interval-based fire-to-run matcher + per-status Today's Fires breakdown on the schedules panel (v0.8.2).
+
+## Screenshots — AI-driven status & root-cause investigation
+
+The dashboard is built around one idea: when a cron misbehaves, the operator should know **what happened**, **why**, and **whether to re-fire** without leaving the page. The watchdog reads OpenClaw's own state files (`jobs.json` + `cron/runs/<id>.jsonl`) and synthesises everything below from them — no separate database of "observations" to keep in sync.
+
+### Overview — every cron, current status, one-click actions
+
+![Dashboard overview](docs/screenshots/01-dashboard-overview.png)
+
+Top: the per-cron table — predicates / healthchecks / max retries / today's retry+alert counts / last-retried + last-alerted timestamps. Each row exposes **Retry now**, **Test alert**, and **History** so an operator can intervene mid-incident without SSH or shell.
+
+Middle: heartbeat scanner status — confirms the predicate sweep is alive and reports the last scan duration.
+
+Bottom: the **Missed & failed cron runs** panel. Reads `jobs.json` directly so crons don't have to be wired into the watchdog to appear here. Each scheduled fire is matched against actual run records using an interval-based matcher (each fire E owns `[E − lead_tol, next_E)` or for the final fire `[E − lead_tol, E + timeout + cushion]`) — this accommodates real-world scheduler queue delay, which is common when agent crons take minutes to start. The badge palette is consistent across the whole UI: `ERRORED` (red), `SKIPPED` (amber), `MISSED` (muted). Successful and still-running fires are filtered out — only things that need attention appear.
+
+### All cron schedules — at-a-glance status of every fire today
+
+![All cron schedules panel](docs/screenshots/02-all-schedules.png)
+
+Real-time view of every cron in `jobs.json`, agent-filterable. Two columns answer two different questions:
+
+- **Occurrences** = how many times this cron is scheduled to fire today.
+- **Status today** = what has *actually* happened to each of those fires so far — the same `ok` / `err` / `skip` / `miss` / `run` / `up` breakdown chips used by the missed/failed panel above, computed by the same matcher.
+
+A 3-px coloured row border (green / amber / red / muted) sums the row's day-status so the table reads at a glance: green rows are healthy, red rows demand attention.
+
+### AI Assist — pluggable models, per-feature toggles
+
+![AI Assist settings](docs/screenshots/03-ai-assist-settings.png)
+
+Models come from OpenClaw's own `openclaw.json` provider list — point at any OpenAI-compatible endpoint (vLLM, Ollama, llama.cpp, Anthropic via gateway, etc.). The dropdown surfaces each model's reachability with a live `online` / `offline` indicator, and the resolved tuning profile (e.g. `qwen3`-family chat-template kwargs to suppress chain-of-thought leakage into the JSON output) is shown inline so the operator can see *which knobs apply* before any token is spent.
+
+Three discrete AI-powered features ride on this:
+
+- **Predicate suggestions** — given a cron's prompt + recent run summaries, propose post-success predicates (file-mtime, file-grew, JSON-key-equals, etc.) so silent successes get caught.
+- **Healthcheck suggestions + enforcement** — propose pre-retry dependency checks (HTTP probes, file freshness, etc.). At retry time the watchdog evaluates them; if any fails the retry is skipped and a *dependency unhealthy* alert fires instead of hammering a dead service.
+- **Failure-mode explanations** — see below.
+
+All calls are best-effort with a tight per-call timeout: a slow or offline model never blocks the alert path.
+
+### OpenClaw integration — wire crons in or out from the UI
+
+![OpenClaw integration modal](docs/screenshots/04-openclaw-integration.png)
+
+Lists every cron in `jobs.json` with its failure-alert wiring state. One-click **Wire** sets the cron's failure-alert webhook at this watchdog (`openclaw cron edit ... --failure-alert-mode webhook`); **Unwire** removes it. The In-Watchdog column shows which crons we've already seen failures for. The Predicates column shows how many post-success checks are configured per cron. No CLI required for normal operations.
+
+### History — every retry + every alert, with on-demand AI diagnosis
+
+![History modal](docs/screenshots/05-history.png)
+
+Per-cron forensics. Retry events show outcome (`queued`, `declined-disabled`, `declined-dependency-down`, `declined-over-limit`, `declined-error`) so the operator can tell *why* a retry didn't fire — vs. just whether one did. Alert events show recipient + subject + delivery status. Every row exposes an **Explain** button.
+
+(Email recipient and one path-username segment have been redacted in this public screenshot.)
+
+### Failure-mode explanation — AI cause + next step + category
+
+![Failure-mode explanation modal](docs/screenshots/06-failure-explanation.png)
+
+Click **Explain** on any retry, alert, or missed/failed row and the watchdog feeds the error text + recent run-log tail + retry history + cron prompt context to the configured model and asks for a structured JSON response: `cause`, `next_step`, `confidence`, `category`. The category (`model` / `network` / `config` / `data` / `code` / `dependency` / `unknown`) drives a re-fire recommendation:
+
+| Category | Default recommendation |
+|---|---|
+| `model` | Re-fire — usually transient. |
+| `network` | Verify upstream reachability, then re-fire. |
+| `config` | **Don't re-fire** — fix config first; the error will repeat. |
+| `data` | Inspect input before re-firing. |
+| `code` | **Don't re-fire** — deploy fix needed. |
+| `dependency` | Wait for the dependency to recover, then re-fire. |
+| `unknown` | Review diagnosis + healthcheck state, decide. |
+
+The modal also evaluates the cron's currently-configured healthchecks at click-time. If any are *currently* failing, the recommendation is overridden to *"don't re-fire until the dependency recovers"* — a known-failing dependency is more authoritative than a model's guess.
+
+Diagnoses are cached per event so repeat clicks are instant; a **Regenerate** button forces a fresh call when the operator suspects the cached diagnosis is stale.
 
 ## Architecture
 
