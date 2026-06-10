@@ -1422,7 +1422,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_text(404, "Not found")
             return
         ctype = {".html": "text/html", ".js": "application/javascript",
-                 ".css": "text/css"}.get(p.suffix, "application/octet-stream")
+                 ".css": "text/css", ".svg": "image/svg+xml"
+                 }.get(p.suffix, "application/octet-stream")
         self._send_text(200, p.read_text(encoding="utf-8"), ctype=ctype)
 
     # ----- routing
@@ -1444,6 +1445,10 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/web/"):])
         elif path in ("/app.js", "/style.css"):
             self._serve_static(path.lstrip("/"))
+        elif path in ("/favicon.svg", "/favicon.ico"):
+            # /favicon.ico is the browser's default fallback; serve the
+            # SVG for both so old paths keep working without a binary.
+            self._serve_static("favicon.svg")
         elif path == "/api/health":
             self._send_json(200, {"ok": True, "version": VERSION,
                                   "uptime_seconds": int(time.time() - _START_TIME)})
