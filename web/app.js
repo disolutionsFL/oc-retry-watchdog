@@ -1286,11 +1286,26 @@ function renderSchedulesAgentFilter() {
   }).join("") + ` <button class="btn-link" style="font-size:11px;" id="sched-filter-reset">Show all</button>`;
 }
 
+function dominantFiresStatus(b) {
+  // Pick the single status that should color the row at a glance:
+  // any error/missed beats skipped, which beats running, which beats
+  // upcoming. All-ok stays green. No data is neutral.
+  if (!b) return "neutral";
+  if (b.error || b.missed) return "bad";
+  if (b.skipped) return "warn";
+  if (b.running) return "warn";
+  if (b.ok && !b.upcoming) return "good";
+  if (b.ok && b.upcoming) return "good-pending";
+  if (b.upcoming) return "neutral";
+  return "neutral";
+}
+
 function renderTodayFiresBreakdown(s, todayCount) {
   // Inline per-status mini-breakdown in the Today's Fires column.
   // Reuses the same .badge-kind palette as the missed-runs panel so
-  // colors mean the same thing across the dashboard. Hover the count
-  // for the full fire-time list (existing behavior).
+  // colors mean the same thing across the dashboard. The count itself
+  // is tinted by the dominant status so the column reads at a glance.
+  // Hover the count for the full fire-time list.
   const b = s.today_fires_breakdown || {};
   const fireTitles = (s.today_fires || []).map(fmtDate).join('\n');
   const pieces = [];
@@ -1300,7 +1315,8 @@ function renderTodayFiresBreakdown(s, todayCount) {
   if (b.missed)   pieces.push(`<span class="badge-kind kind-missed"    title="${b.missed} missed">${b.missed} miss</span>`);
   if (b.running)  pieces.push(`<span class="badge-kind kind-unwired"   title="${b.running} still within timeout">${b.running} run</span>`);
   if (b.upcoming) pieces.push(`<span class="badge-kind kind-neutral"   title="${b.upcoming} upcoming">${b.upcoming} up</span>`);
-  const total = `<span class="fires-count" title="${escapeAttr(fireTitles)}">${todayCount}</span>`;
+  const dom = dominantFiresStatus(b);
+  const total = `<span class="fires-count fires-${dom}" title="${escapeAttr(fireTitles)}">${todayCount}</span>`;
   if (!pieces.length) return total;
   return `${total} <span class="fires-breakdown">${pieces.join(" ")}</span>`;
 }
@@ -1341,8 +1357,9 @@ function renderSchedulesTable() {
     const agentCell = s.agent
       ? `<span class="agent-chip c${agentColorIndex(s.agent)}">${escapeHtml(s.agent)}</span>`
       : `<span class="muted">—</span>`;
+    const rowStatus = s.enabled ? dominantFiresStatus(s.today_fires_breakdown) : "neutral";
     return `
-      <tr class="sched-row ${s.enabled ? '' : 'sched-row-disabled'}">
+      <tr class="sched-row sched-status-${rowStatus} ${s.enabled ? '' : 'sched-row-disabled'}">
         <td><strong>${escapeHtml(s.name || s.cron_id)}</strong> ${enabledCell}<br><small><code>${s.cron_id}</code></small></td>
         <td>${agentCell}</td>
         <td><code>${escapeHtml(s.schedule || '')}</code></td>
