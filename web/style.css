@@ -883,12 +883,7 @@ tr.missed-row-skipped { background: rgba(201,122,0,0.04); }
 /* Schedules panel: per-status mini-breakdown next to today's fire count */
 .fires-breakdown { display: inline-block; margin-left: 4px; }
 .fires-breakdown .badge-kind { margin-right: 2px; }
-.fires-count { font-weight: 700; padding: 1px 8px; border-radius: 10px; }
-.fires-count.fires-good         { background: rgba(46,125,50,0.18);  color: var(--good); }
-.fires-count.fires-good-pending { background: rgba(46,125,50,0.10);  color: var(--good); }
-.fires-count.fires-warn         { background: rgba(201,122,0,0.18);  color: var(--warn); }
-.fires-count.fires-bad          { background: rgba(178,28,28,0.18);  color: var(--bad); }
-.fires-count.fires-neutral      { background: var(--bg-pill);        color: var(--muted); }
+.fires-count { font-weight: 600; }
 
 /* Row-status left border indicator on schedule rows */
 tr.sched-row td:first-child { border-left: 3px solid transparent; }

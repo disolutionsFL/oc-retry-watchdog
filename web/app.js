@@ -1270,7 +1270,7 @@ async function loadCronSchedules() {
     renderSchedulesAgentFilter();
     renderSchedulesTable();
   } catch (e) {
-    $("#schedules-tbody").innerHTML = `<tr><td colspan="7" class="bad">Load failed: ${escapeHtml(e.message)}</td></tr>`;
+    $("#schedules-tbody").innerHTML = `<tr><td colspan="8" class="bad">Load failed: ${escapeHtml(e.message)}</td></tr>`;
     $("#schedules-count").textContent = "";
   }
 }
@@ -1300,14 +1300,20 @@ function dominantFiresStatus(b) {
   return "neutral";
 }
 
-function renderTodayFiresBreakdown(s, todayCount) {
-  // Inline per-status mini-breakdown in the Today's Fires column.
-  // Reuses the same .badge-kind palette as the missed-runs panel so
-  // colors mean the same thing across the dashboard. The count itself
-  // is tinted by the dominant status so the column reads at a glance.
-  // Hover the count for the full fire-time list.
-  const b = s.today_fires_breakdown || {};
+function renderTodayFiresCount(s, todayCount) {
+  // Number of times the cron is scheduled to fire today (purely
+  // scheduled occurrences, no execution semantics). Hover for the
+  // exact list of fire times.
   const fireTitles = (s.today_fires || []).map(fmtDate).join('\n');
+  return `<span class="fires-count" title="${escapeAttr(fireTitles)}">${todayCount}</span>`;
+}
+
+function renderTodayFiresBreakdown(s) {
+  // Per-status breakdown of today's scheduled fires by what has
+  // actually happened to each one so far (matched against
+  // cron/runs/<id>.jsonl using the same matcher as the missed-runs
+  // panel). Color palette mirrors the missed-runs badges.
+  const b = s.today_fires_breakdown || {};
   const pieces = [];
   if (b.ok)       pieces.push(`<span class="badge-kind kind-succeeded" title="${b.ok} successful">${b.ok} ok</span>`);
   if (b.error)    pieces.push(`<span class="badge-kind kind-errored"   title="${b.error} errored">${b.error} err</span>`);
@@ -1315,10 +1321,8 @@ function renderTodayFiresBreakdown(s, todayCount) {
   if (b.missed)   pieces.push(`<span class="badge-kind kind-missed"    title="${b.missed} missed">${b.missed} miss</span>`);
   if (b.running)  pieces.push(`<span class="badge-kind kind-unwired"   title="${b.running} still within timeout">${b.running} run</span>`);
   if (b.upcoming) pieces.push(`<span class="badge-kind kind-neutral"   title="${b.upcoming} upcoming">${b.upcoming} up</span>`);
-  const dom = dominantFiresStatus(b);
-  const total = `<span class="fires-count fires-${dom}" title="${escapeAttr(fireTitles)}">${todayCount}</span>`;
-  if (!pieces.length) return total;
-  return `${total} <span class="fires-breakdown">${pieces.join(" ")}</span>`;
+  if (!pieces.length) return `<span class="muted">&mdash;</span>`;
+  return `<span class="fires-breakdown">${pieces.join(" ")}</span>`;
 }
 
 function renderSchedulesTable() {
@@ -1334,7 +1338,7 @@ function renderSchedulesTable() {
   });
   $("#schedules-count").textContent = `(${rows.length} of ${schedState.schedules.length})`;
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">No crons match the current filter.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">No crons match the current filter.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map(s => {
@@ -1346,7 +1350,10 @@ function renderSchedulesTable() {
       ? `<small class="bad" title="${escapeAttr(s.schedule_parse_error)}">parse error</small>`
       : todayCount === 0
         ? `<small class="muted">0</small>`
-        : renderTodayFiresBreakdown(s, todayCount);
+        : renderTodayFiresCount(s, todayCount);
+    const statusTodayCell = s.schedule_parse_error || todayCount === 0
+      ? `<span class="muted">&mdash;</span>`
+      : renderTodayFiresBreakdown(s);
     const nextFire = s.next_fire_iso ? fmtDate(s.next_fire_iso) : `<span class="muted">—</span>`;
     const lastRun = s.last_actual_run_iso
       ? `${fmtDate(s.last_actual_run_iso)} <small class="muted">(${escapeHtml(s.last_actual_run_status || "?")})</small>`
@@ -1364,6 +1371,7 @@ function renderSchedulesTable() {
         <td>${agentCell}</td>
         <td><code>${escapeHtml(s.schedule || '')}</code></td>
         <td class="num">${todayCountCell}</td>
+        <td>${statusTodayCell}</td>
         <td>${nextFire}</td>
         <td>${lastRun}</td>
         <td>${wiredCell}</td>

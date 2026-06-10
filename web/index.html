@@ -18,7 +18,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/web/style.css?v=0.8.2a">
+  <link rel="stylesheet" href="/web/style.css?v=0.8.2b">
 </head>
 <body>
   <header>
@@ -131,7 +131,8 @@
               <th>Cron</th>
               <th>Agent</th>
               <th>Schedule</th>
-              <th>Today's fires</th>
+              <th title="Number of times this cron is scheduled to fire today">Today's fires</th>
+              <th title="How today's fires have played out so far (matched against actual run records)">Status today</th>
               <th>Next fire</th>
               <th>Last run</th>
               <th>Wired</th>
@@ -391,6 +392,6 @@
 
   <dialog id="toast"></dialog>
 
-  <script src="/web/app.js?v=0.8.2a"></script>
+  <script src="/web/app.js?v=0.8.2b"></script>
 </body>
 </html>
